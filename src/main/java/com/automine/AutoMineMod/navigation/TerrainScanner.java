@@ -106,12 +106,18 @@ public final class TerrainScanner {
         StepResult nearResult = evaluateProbe(level, nearFeet, maxDrop);
         if (!nearResult.walkable()) return StepResult.BLOCKED;
 
+        Vec3 side = new Vec3(-dir.z, 0, dir.x).normalize().scale(0.42);
+        StepResult nearSide = evaluateProbe(level, blockOf(near.add(side)), maxDrop);
+        StepResult farSide = evaluateProbe(level, blockOf(far.add(side)), maxDrop);
+        if (!nearSide.walkable() || !farSide.walkable()) return StepResult.BLOCKED;
+
         BlockPos farFeet = blockOf(far);
         if (isLavaAt(level, farFeet) || isLavaAt(level, farFeet.above())) return StepResult.BLOCKED;
         if (dropDepth(level, farFeet) > Math.max(maxDrop, MAX_SAFE_DROP)) return StepResult.BLOCKED;
         if (isDamageBlock(level.getBlockState(blockOf(far)))) return StepResult.BLOCKED;
 
-        return nearResult;
+        return nearResult.needJump() || nearSide.needJump() || farSide.needJump()
+            ? StepResult.STEP_UP : StepResult.CLEAR;
     }
 
     private static StepResult evaluateProbe(Level level, BlockPos feet) {
@@ -256,17 +262,25 @@ public final class TerrainScanner {
     }
 
     public static Vec3 findEscapeDirection(Level level, Vec3 feetPos) {
-        for (int i = 0; i < 8; i++) {
+        Vec3 best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < 16; i++) {
             double angle = Math.toRadians(i * 45.0);
             Vec3 dir = new Vec3(Math.sin(angle), 0, -Math.cos(angle));
-            for (double dist : new double[]{1.2, 2.2, 3.2}) {
-                Vec3 probe = feetPos.add(dir.scale(dist));
-                if (isSafeStand(level, blockOf(probe))) {
-                    return dir;
+            for (double dist = 1.0; dist <= 8.0; dist += 1.0) {
+                BlockPos probe = blockOf(feetPos.add(dir.scale(dist)));
+                for (int yOffset = 2; yOffset >= -2; yOffset--) {
+                    BlockPos candidate = probe.offset(0, yOffset, 0);
+                    if (!isSafeStand(level, candidate)) continue;
+                    double score = 20.0 - dist + (yOffset > 0 ? yOffset : 0);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = dir;
+                    }
                 }
             }
         }
-        return null;
+        return best;
     }
 
     public static Vec3 rotateY(Vec3 v, double degrees) {

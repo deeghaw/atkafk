@@ -88,6 +88,8 @@ public class ClientAutoPlayManager {
     private Vec3 lastProgressPos = null;
     private int stuckTicks = 0;
     private int stuckEvents = 0;
+    private int recoveryTicks = 0;
+    private Vec3 recoveryDir = null;
     private int jumpPulseTicks = 0;
     private Creeper creeperThreat = null;
     private boolean creeperFleeBlocked = false;
@@ -133,6 +135,8 @@ public class ClientAutoPlayManager {
         if (cooldown > 0) cooldown--;
         if (weaponSwapGrace > 0) weaponSwapGrace--;
         if (forceEscapeTicks > 0) forceEscapeTicks--;
+        if (recoveryTicks > 0) recoveryTicks--;
+        else recoveryDir = null;
         updateBlacklist();
 
         creeperThreat = Targeting.findNearestCreeper(player, Targeting.CREEPER_FLEE_RADIUS);
@@ -282,6 +286,8 @@ public class ClientAutoPlayManager {
             }
             return null;
         }
+
+        if (recoveryDir != null && recoveryTicks > 0) return recoveryDir;
 
         if (creeperThreat != null) {
             if (!hasBowAndArrows(player)) {
@@ -560,8 +566,9 @@ public class ClientAutoPlayManager {
             return;
         }
         double dx = player.getX() - lastProgressPos.x;
+        double dy = player.getY() - lastProgressPos.y;
         double dz = player.getZ() - lastProgressPos.z;
-        double movedSq = dx * dx + dz * dz;
+        double movedSq = dx * dx + dy * dy + dz * dz;
         if (movedSq < 9.0E-4) {
             stuckTicks++;
         } else {
@@ -573,6 +580,18 @@ public class ClientAutoPlayManager {
             jumpPulseTicks = Math.max(jumpPulseTicks, 6);
             lockedAvoidDir = null;
             avoidLockTicksLeft = 0;
+            Vec3 recoveryHeading = new Vec3(player.getDeltaMovement().x, 0, player.getDeltaMovement().z);
+            if (recoveryHeading.lengthSqr() < 1.0E-4) {
+                double yaw = Math.toRadians(player.getYRot());
+                recoveryHeading = new Vec3(-Math.sin(yaw), 0, Math.cos(yaw));
+            }
+            recoveryDir = TerrainScanner.chooseAvoidDirection(
+                    player.level(), player.position(), recoveryHeading,
+                    90.0, TerrainScanner.MAX_CONTROLLED_DESCENT, TerrainScanner.HAZARD_MARGIN);
+            if (recoveryDir == null) {
+                recoveryDir = TerrainScanner.rotateY(new Vec3(1, 0, 0), player.getYRot() + 90.0).normalize();
+            }
+            recoveryTicks = 40;
             stuckTicks = 0;
             lastProgressPos = null;
             if (stuckEvents >= STUCK_EVENTS_BEFORE_BLACKLIST && creeperThreat == null) {
@@ -973,6 +992,8 @@ public class ClientAutoPlayManager {
         urgentEscape = false;
         weaponSwapGrace = 0;
         forceEscapeTicks = 0;
+        recoveryTicks = 0;
+        recoveryDir = null;
         pokeTarget = null;
         pokeTicks = 0;
         smoothGoalsInitialized = false;
