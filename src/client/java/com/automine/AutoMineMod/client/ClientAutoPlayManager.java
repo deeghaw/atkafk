@@ -421,9 +421,23 @@ public class ClientAutoPlayManager {
                 && currentTarget.getY() < player.getY() - 1.5;
         int maxDrop = descending
             ? TerrainScanner.MAX_CONTROLLED_DESCENT : TerrainScanner.MAX_SAFE_DROP;
+        double margin = TerrainScanner.HAZARD_MARGIN;
+
+        if (creeperThreat != null) {
+            int fleeMaxDrop = Math.max(maxDrop, TerrainScanner.MAX_CONTROLLED_DESCENT);
+            Vec3 flee = TerrainScanner.chooseFleeDirection(
+                    player.level(), player.position(), creeperThreat.position(), fleeMaxDrop, margin);
+            StepResult step = TerrainScanner.evaluateStep(
+                    player.level(), player.position(), flee, fleeMaxDrop);
+            needJumpAhead = step.needJump();
+            lockedAvoidDir = null;
+            return flee;
+        }
 
         StepResult straight = TerrainScanner.evaluateStep(player.level(), player.position(), desiredDir, maxDrop);
-        if (straight.walkable()) {
+        boolean straightDirty = straight.walkable()
+                && TerrainScanner.hasHazardAhead(player.level(), player.position(), desiredDir, margin);
+        if (straight.walkable() && !straightDirty) {
             lockedAvoidDir = null;
             needJumpAhead = straight.needJump();
             return desiredDir;
@@ -439,7 +453,9 @@ public class ClientAutoPlayManager {
                     lockedAvoidDir.dot(desiredDir), -1.0, 1.0)));
             StepResult lockedStep = TerrainScanner.evaluateStep(
                     player.level(), player.position(), lockedAvoidDir, maxDrop);
-            if (lockedStep.walkable() && angleDeg <= AVOID_LOCK_MAX_ANGLE_DEG) {
+            if (lockedStep.walkable() && angleDeg <= AVOID_LOCK_MAX_ANGLE_DEG
+                    && !TerrainScanner.hasHazardAhead(
+                            player.level(), player.position(), lockedAvoidDir, margin)) {
                 avoidLockTicksLeft = AVOID_LOCK_TICKS;
                 needJumpAhead = lockedStep.needJump();
                 return lockedAvoidDir;
@@ -447,7 +463,12 @@ public class ClientAutoPlayManager {
         }
 
         Vec3 avoided = TerrainScanner.chooseAvoidDirection(
-                player.level(), player.position(), desiredDir, 0.0, maxDrop);
+                player.level(), player.position(), desiredDir, 0.0, maxDrop, margin);
+        if (avoided == null && straightDirty) {
+            lockedAvoidDir = null;
+            needJumpAhead = straight.needJump();
+            return desiredDir;
+        }
         if (avoided != null) {
             lockedAvoidDir = avoided;
             avoidLockTicksLeft = AVOID_LOCK_TICKS;
@@ -483,18 +504,14 @@ public class ClientAutoPlayManager {
     private void applyMovement(Minecraft client, LocalPlayer player, Vec3 moveDir, boolean swimming) {
         boolean fwd = false, back = false, sprint = false, jump = false;
         if (creeperThreat != null) {
-            if (urgentEscape) {
-                if (usingBow) {
-                    back = moveDir != null;
-                } else {
-                    fwd = moveDir != null;
-                    sprint = fwd && player.onGround() && !swimming;
-                }
-            } else if (shootStance) {
+            if (shootStance) {
                 fwd = false;
                 back = false;
-            } else {
+            } else if (usingBow && !urgentEscape) {
                 back = moveDir != null;
+            } else {
+                fwd = moveDir != null;
+                sprint = fwd && urgentEscape && player.onGround() && !swimming;
             }
         } else if (moveDir != null) {
             boolean nearTarget = currentTarget != null
@@ -563,10 +580,15 @@ public class ClientAutoPlayManager {
             responsiveness = FAST_SMOOTHING;
             maxYaw = MAX_YAW_SPEED_FAST;
         } else if (creeperThreat != null) {
-            boolean faceAway = urgentEscape && !usingBow;
-            Vec3 to = faceAway
-                    ? player.position().subtract(creeperThreat.position())
-                    : creeperThreat.position().subtract(player.position());
+            boolean faceAway = !shootStance && !usingBow;
+            Vec3 to;
+            if (faceAway) {
+                to = moveDir != null
+                        ? new Vec3(moveDir.x, 0, moveDir.z)
+                        : player.position().subtract(creeperThreat.position());
+            } else {
+                to = creeperThreat.position().subtract(player.position());
+            }
             rawYaw = headingYawOf(new Vec3(to.x, 0, to.z));
             if (!faceAway) {
                 boolean aiming = shootStance || usingBow;

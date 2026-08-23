@@ -24,6 +24,11 @@ public final class TerrainScanner {
     private static final double FAR_PROBE = 1.4;
     public static final int MAX_CONTROLLED_DESCENT = 6;
 
+    public static final double HAZARD_MARGIN = 3.5;
+    public static final double FLEE_HAZARD_PENALTY = 24.0;
+    private static final double MARGIN_START = 1.0;
+    private static final double MARGIN_SAMPLE_STEP = 0.7;
+
     private TerrainScanner() {
     }
 
@@ -156,11 +161,48 @@ public final class TerrainScanner {
         return false;
     }
 
+    public static boolean hasHazardAhead(Level level, Vec3 feetPos, Vec3 dir, double margin) {
+        if (margin <= 0.0) return false;
+        Vec3 flat = new Vec3(dir.x, 0.0, dir.z);
+        if (flat.lengthSqr() < 1.0E-4) return false;
+        flat = flat.normalize();
+        int baseY = (int) Math.floor(feetPos.y);
+        for (double d = MARGIN_START; d <= margin + 1.0E-4; d += MARGIN_SAMPLE_STEP) {
+            double sx = Math.floor(feetPos.x + flat.x * d);
+            double sz = Math.floor(feetPos.z + flat.z * d);
+            if (isMarginSampleHazardous(level, new BlockPos((int) sx, baseY, (int) sz), baseY)) return true;
+        }
+        return false;
+    }
+
+    private static boolean isMarginSampleHazardous(Level level, BlockPos sample, int baseY) {
+        for (int dy = -1; dy <= 1; dy++) {
+            BlockPos p = new BlockPos(sample.getX(), baseY + dy, sample.getZ());
+            BlockState state = level.getBlockState(p);
+            if (!state.getFluidState().isEmpty()) return true;
+            if (isDamageBlock(state)) return true;
+        }
+        for (int dy = 2; dy >= -MAX_SAFE_DROP; dy--) {
+            BlockPos feet = new BlockPos(sample.getX(), baseY + dy, sample.getZ());
+            if (isWalkableThrough(level, feet)
+                    && isWalkableThrough(level, feet.above())
+                    && isSolidFloor(level, feet)
+                    && dropDepth(level, feet) <= MAX_SAFE_DROP) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public static Vec3 chooseAvoidDirection(Level level, Vec3 feetPos, Vec3 desiredDir, double biasDegrees) {
         return chooseAvoidDirection(level, feetPos, desiredDir, biasDegrees, MAX_SAFE_DROP);
     }
 
     public static Vec3 chooseAvoidDirection(Level level, Vec3 feetPos, Vec3 desiredDir, double biasDegrees, int maxDrop) {
+        return chooseAvoidDirection(level, feetPos, desiredDir, biasDegrees, maxDrop, 0.0);
+    }
+
+    public static Vec3 chooseAvoidDirection(Level level, Vec3 feetPos, Vec3 desiredDir, double biasDegrees, int maxDrop, double hazardMargin) {
         Vec3 biased = biasDegrees != 0.0 ? rotateY(desiredDir, biasDegrees).normalize() : desiredDir;
         Vec3 best = null;
         int bestScore = Integer.MIN_VALUE;
@@ -172,12 +214,37 @@ public final class TerrainScanner {
             if (evaluateStep(level, feetPos.add(candidate.scale(1.5)), candidate, maxDrop).walkable()) score += 8;
             if (evaluateStep(level, feetPos.add(candidate.scale(3.0)), candidate, maxDrop).walkable()) score += 8;
             if (step.needJump()) score -= 2;
+            if (hazardMargin > 0.0 && hasHazardAhead(level, feetPos, candidate, hazardMargin)) score -= FLEE_HAZARD_PENALTY;
             if (score > bestScore) {
                 bestScore = score;
                 best = candidate.normalize();
             }
         }
         return best;
+    }
+
+    public static Vec3 chooseFleeDirection(Level level, Vec3 feetPos, Vec3 threatPos, int maxDrop, double hazardMargin) {
+        Vec3 away = new Vec3(feetPos.x - threatPos.x, 0.0, feetPos.z - threatPos.z);
+        if (away.lengthSqr() < 1.0E-4) away = new Vec3(1.0, 0.0, 0.0);
+        away = away.normalize();
+        Vec3 best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (double dev : DEVIATIONS) {
+            Vec3 candidate = dev == 0.0 ? away : rotateY(away, dev);
+            StepResult step = evaluateStep(level, feetPos, candidate, maxDrop);
+            if (!step.walkable()) continue;
+            double score = candidate.dot(away) * 12.0;
+            if (dev == 0.0) score += 3.0;
+            if (evaluateStep(level, feetPos.add(candidate.scale(1.5)), candidate, maxDrop).walkable()) score += 6.0;
+            if (evaluateStep(level, feetPos.add(candidate.scale(3.0)), candidate, maxDrop).walkable()) score += 6.0;
+            if (step.needJump()) score -= 2.0;
+            if (hazardMargin > 0.0 && hasHazardAhead(level, feetPos, candidate, hazardMargin)) score -= FLEE_HAZARD_PENALTY;
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate.normalize();
+            }
+        }
+        return best != null ? best : away;
     }
 
     public static boolean hasVisibleRoute(Level level, Vec3 from, Vec3 to) {
