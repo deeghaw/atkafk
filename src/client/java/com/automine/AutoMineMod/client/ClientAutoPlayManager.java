@@ -230,8 +230,7 @@ public class ClientAutoPlayManager {
         if (direction.lengthSqr() < 0.0025) return false;
         direction = direction.normalize();
         Vec3 probe = player.position().add(direction.scale(FALL_PREVENTION_DISTANCE));
-        return !TerrainScanner.isSafeStand(player.level(), new BlockPos(
-                (int) Math.floor(probe.x), player.blockPosition().getY(), (int) Math.floor(probe.z)));
+        return !TerrainScanner.evaluateStep(player.level(), player.position(), direction).walkable();
     }
 
     private void updateBlacklist() {
@@ -676,7 +675,7 @@ public class ClientAutoPlayManager {
 
         List<LivingEntity> list = player.level().getEntitiesOfClass(LivingEntity.class, box,
             e -> e != player && e.isAlive() && e instanceof Enemy && !Targeting.isAquatic(e)
-                && hasClearShot(player, e));
+                && !targetBlacklist.containsKey(e.getId()));
 
         LivingEntity best = null;
         double bestScore = Double.MAX_VALUE;

@@ -121,8 +121,7 @@ public final class TerrainScanner {
 
         if (!isWalkableThrough(level, feet)) {
             BlockPos above = feet.above();
-            if (level.getBlockState(feet).getCollisionShape(level, feet).isEmpty()
-                    && !isDamageBlock(level.getBlockState(feet))
+            if (!isDamageBlock(level.getBlockState(feet))
                     && level.getFluidState(above).isEmpty()
                     && isWalkableThrough(level, above)
                     && isSafeStand(level, above)) {
