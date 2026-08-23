@@ -3,7 +3,6 @@ package com.automine.AutoMineMod.navigation;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.animal.axolotl.Axolotl;
 import net.minecraft.world.entity.animal.dolphin.Dolphin;
-import net.minecraft.world.entity.animal.fish.AbstractFish;
 import net.minecraft.world.entity.animal.fish.WaterAnimal;
 import net.minecraft.world.entity.animal.squid.GlowSquid;
 import net.minecraft.world.entity.animal.squid.Squid;

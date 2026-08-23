@@ -8,8 +8,8 @@ import net.minecraft.util.Mth;
  * and an exact snap inside a tiny deadzone to kill residual jitter.
  */
 public class CameraSteering {
-    private static final float MAX_YAW_SPEED = 30.0f;
-    private static final float MAX_PITCH_SPEED = 18.0f;
+    private static final float MAX_YAW_SPEED = 22.0f;
+    private static final float MAX_PITCH_SPEED = 14.0f;
     private static final float SNAP_YAW_DEG = 0.30f;
     private static final float SNAP_PITCH_DEG = 0.20f;
 
@@ -31,6 +31,11 @@ public class CameraSteering {
     public float getPitch() { return pitch; }
 
     public void steer(float targetYaw, float targetPitch, float responsiveness) {
+        steer(targetYaw, targetPitch, responsiveness, MAX_YAW_SPEED, MAX_PITCH_SPEED);
+    }
+
+    public void steer(float targetYaw, float targetPitch, float responsiveness,
+                      float maxYawSpeed, float maxPitchSpeed) {
         if (!initialized) {
             reset(targetYaw, targetPitch);
             return;
@@ -42,8 +47,8 @@ public class CameraSteering {
         float yawError = Mth.degreesDifference(yaw, targetYaw);
         float pitchError = targetPitch - pitch;
 
-        float yawStep = Mth.clamp(yawError * responsiveness, -MAX_YAW_SPEED, MAX_YAW_SPEED);
-        float pitchStep = Mth.clamp(pitchError * responsiveness, -MAX_PITCH_SPEED, MAX_PITCH_SPEED);
+        float yawStep = Mth.clamp(yawError * responsiveness, -maxYawSpeed, maxYawSpeed);
+        float pitchStep = Mth.clamp(pitchError * responsiveness, -maxPitchSpeed, maxPitchSpeed);
 
         if (Math.abs(yawError) <= SNAP_YAW_DEG) yawStep = yawError;
         if (Math.abs(pitchError) <= SNAP_PITCH_DEG) pitchStep = pitchError;

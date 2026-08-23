@@ -9,6 +9,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Creeper;
@@ -17,8 +18,8 @@ import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
-import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -30,12 +31,22 @@ import java.util.Map;
 public class ClientAutoPlayManager {
     private static final double SEARCH_RADIUS = 32.0;
     private static final double ATTACK_RANGE = 3.2;
-    private static final double BOW_MIN_RANGE = 4.0;
-    private static final double BOW_MAX_RANGE = 16.0;
+    private static final double BOW_MAX_RANGE = 18.0;
+    private static final double SHOOT_MIN_DIST = Targeting.CREEPER_SAFE_DISTANCE + 1.5;
+    private static final double CREEPER_DANGER_DIST = 5.0;
+    private static final double DRAW_ABORT_DIST = 4.5;
+    private static final int MIN_CHARGE_TO_RELEASE_EARLY = 14;
     private static final int ATTACK_COOLDOWN = 10;
-    private static final int BOW_HOLD_TICKS = 22;
-    private static final float CAMERA_SMOOTHING = 0.45f;
-    private static final float MOVE_HEADING_SMOOTHING = 0.65f;
+    private static final int BOW_HOLD_TICKS = 21;
+    private static final float AIM_SMOOTHING = 0.34f;
+    private static final float HEADING_SMOOTHING = 0.38f;
+    private static final float FAST_SMOOTHING = 0.50f;
+    private static final float GOAL_TRACK_SMOOTHING = 0.50f;
+    private static final float MAX_YAW_SPEED_AIM = 16.0f;
+    private static final float MAX_PITCH_SPEED_AIM = 11.0f;
+    private static final float MAX_YAW_SPEED_HEADING = 22.0f;
+    private static final float MAX_PITCH_SPEED_HEADING = 14.0f;
+    private static final float MAX_YAW_SPEED_FAST = 26.0f;
     private static final double SPRINT_DISTANCE_SQR = 7.0 * 7.0;
     private static final double BRAKE_RANGE_SQR = 2.85 * 2.85;
     private static final int BLACKLIST_TICKS = 200;
@@ -49,6 +60,11 @@ public class ClientAutoPlayManager {
     private static final double FOOD_SAFE_RADIUS = 10.0;
     private static final double CREEPER_FLEE_DISTANCE = 8.0;
     private static final double FALL_PREVENTION_DISTANCE = 1.4;
+    private static final double POKE_RANGE = 3.0;
+    private static final float POKE_CONE_DEG = 65.0f;
+    private static final int POKE_AIM_MAX_TICKS = 5;
+    private static final int WEAPON_SWAP_GRACE_TICKS = 2;
+    private static final int FORCE_ESCAPE_TICKS = 15;
 
     private int cooldown = 0;
     private LivingEntity currentTarget = null;
@@ -58,18 +74,26 @@ public class ClientAutoPlayManager {
 
     private boolean usingBow = false;
     private int bowTicks = 0;
+    private int bowDrawVerify = 0;
+    private boolean shootStance = false;
+    private boolean urgentEscape = false;
+    private int weaponSwapGrace = 0;
+    private int forceEscapeTicks = 0;
+    private LivingEntity pokeTarget = null;
+    private int pokeTicks = 0;
+    private float smoothYawGoal;
+    private float smoothPitchGoal;
+    private boolean smoothGoalsInitialized = false;
 
     private Vec3 lastSafePos = null;
     private Vec3 lastProgressPos = null;
     private int stuckTicks = 0;
     private int stuckEvents = 0;
     private int jumpPulseTicks = 0;
-    private boolean fleeingCreeper = false;
     private Creeper creeperThreat = null;
 
     private Vec3 lockedAvoidDir = null;
     private int avoidLockTicksLeft = 0;
-    private boolean moveHeadingActive = false;
     private boolean needJumpAhead = false;
     private int explorationTicks = 0;
     private Vec3 explorationDir = new Vec3(1, 0, 0);
@@ -107,46 +131,57 @@ public class ClientAutoPlayManager {
         }
 
         if (cooldown > 0) cooldown--;
+        if (weaponSwapGrace > 0) weaponSwapGrace--;
+        if (forceEscapeTicks > 0) forceEscapeTicks--;
         updateBlacklist();
 
-        syncTargetFromServer(client, player);
+        creeperThreat = Targeting.findNearestCreeper(player, Targeting.CREEPER_FLEE_RADIUS);
+        double creeperDist = creeperThreat != null ? player.distanceTo(creeperThreat) : Double.MAX_VALUE;
+        urgentEscape = creeperThreat != null
+                && (creeperDist < CREEPER_DANGER_DIST || forceEscapeTicks > 0);
 
-        if (currentTarget != null && !isTargetValid(player, currentTarget)) {
-            currentTarget = null;
-        }
-        if (currentTarget == null) {
-            currentTarget = findBestTarget(player);
-        }
-        LivingEntity nearbyThreat = findNearestThreat(player);
-        if (nearbyThreat != null && (currentTarget == null
-                || player.distanceToSqr(currentTarget) > DEFENSE_RADIUS * DEFENSE_RADIUS)) {
-            if (usingBow) {
-                stopBowUse(client, player);
+        if (creeperThreat != null) {
+            currentTarget = creeperThreat;
+        } else {
+            if (currentTarget != null && !isTargetValid(player, currentTarget)) {
+                currentTarget = null;
             }
-            currentTarget = nearbyThreat;
+            if (currentTarget == null) {
+                currentTarget = findBestTarget(player);
+            }
+            LivingEntity nearbyThreat = findNearestThreat(player);
+            if (nearbyThreat != null && (currentTarget == null
+                    || player.distanceToSqr(currentTarget) > DEFENSE_RADIUS * DEFENSE_RADIUS)) {
+                if (usingBow) cancelDraw(client, player);
+                currentTarget = nearbyThreat;
+            }
         }
         resetTargetProgressIfNeeded();
-
         updateLastSafePos(player);
 
-        creeperThreat = Targeting.findNearestCreeper(player, Targeting.CREEPER_FLEE_RADIUS);
-        fleeingCreeper = creeperThreat != null
-            && player.distanceTo(creeperThreat) < CREEPER_FLEE_DISTANCE;
-        if (fleeingCreeper) {
-            currentTarget = creeperThreat;
+        boolean bowReady = hasBowAndArrows(player);
+        if (usingBow && !bowReady) cancelDraw(client, player);
+        boolean wantShoot = creeperThreat != null && bowReady && !urgentEscape && cooldown <= 0
+                && creeperDist >= SHOOT_MIN_DIST && creeperDist <= BOW_MAX_RANGE
+                && hasClearShot(player, creeperThreat);
+        if (wantShoot || (usingBow && creeperThreat != null && !urgentEscape)) {
+            shootStance = true;
+        } else {
+            shootStance = false;
         }
 
         if (isFallingDangerously(player)) {
             releaseAllKeys(client);
-            steerCamera(player, aimPointFor(player));
+            updateCameraAndApply(player, null);
             return;
         }
 
         if (player.isInLava()) {
             escapeFluid(client, player);
-            steerCamera(player, aimPointFor(player));
             return;
         }
+
+        updatePokeTarget(player);
 
         if (eatIfNeeded(client, player)) {
             releaseMovementKeys(client);
@@ -156,66 +191,36 @@ public class ClientAutoPlayManager {
         boolean swimming = player.isInWater();
 
         Vec3 desiredDir = computeDesiredDir(player);
-        if (currentTarget == null && !fleeingCreeper && !hasNearbyThreat(player)) {
+        if (creeperThreat == null && currentTarget == null && !hasNearbyThreat(player)) {
             desiredDir = explorationDirection(player);
         }
-        if (isNearUnsafeDrop(player, desiredDir)) {
-            releaseMovementKeys(client);
-            steerCamera(player, aimPointFor(player));
-            return;
-        }
         Vec3 moveDir = pickMoveDir(player, desiredDir);
+        if (moveDir != null && isNearUnsafeDrop(player, moveDir)) {
+            releaseMovementKeys(client);
+            moveDir = null;
+        }
         applyMovement(client, player, moveDir, swimming);
 
-        if (moveDir != null) {
+        if (moveDir != null && !shootStance && pokeTarget == null) {
             trackStuck(player);
         } else if (lastProgressPos != null) {
             lastProgressPos = player.position();
         }
-        trackTargetReachability(player, moveDir);
-
-        Float idleYawGoal = null;
-        if (moveDir == null && currentTarget != null) {
-            Vec3 toT = currentTarget.position().subtract(player.position());
-            if (toT.horizontalDistanceSqr() > 1.0E-4) {
-                idleYawGoal = headingYawOf(new Vec3(toT.x, 0, toT.z));
-            }
+        if (creeperThreat == null) {
+            trackTargetReachability(player, moveDir);
         }
-        steerCamera(player, aimPointFor(player), idleYawGoal);
+
+        updateCameraAndApply(player, moveDir);
 
         if (currentTarget != null) {
             combatTick(client, player, currentTarget);
         } else if (usingBow) {
-            player.releaseUsingItem();
-            client.options.keyUse.setDown(false);
-            usingBow = false;
+            cancelDraw(client, player);
         }
-    }
-
-    private Vec3 aimPointFor(LocalPlayer player) {
-        if (fleeingCreeper && creeperThreat != null) {
-            return bodyCenter(creeperThreat);
-        }
-        if (currentTarget != null) {
-            return bodyCenter(currentTarget);
-        }
-        return null;
     }
 
     private Vec3 bodyCenter(LivingEntity e) {
         return new Vec3(e.getX(), e.getY() + e.getBbHeight() * 0.75, e.getZ());
-    }
-
-    private void syncTargetFromServer(Minecraft client, LocalPlayer player) {
-        try {
-            int tid = player.getScore();
-            if (tid >= 0 && client.level.getEntity(tid) instanceof LivingEntity le) {
-                if (!targetBlacklist.containsKey(le.getId())) {
-                    currentTarget = le;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
     }
 
     private boolean isFallingDangerously(LocalPlayer player) {
@@ -271,10 +276,12 @@ public class ClientAutoPlayManager {
             return null;
         }
 
-        if (fleeingCreeper && creeperThreat != null) {
+        if (creeperThreat != null) {
+            if (shootStance) return null;
             Vec3 away = player.position().subtract(creeperThreat.position());
             Vec3 flatAway = new Vec3(away.x, 0, away.z);
             if (flatAway.lengthSqr() > 1.0E-4) return flatAway.normalize();
+            return null;
         }
 
         if (currentTarget == null) return null;
@@ -292,8 +299,60 @@ public class ClientAutoPlayManager {
         return new Vec3(toTarget.x, 0, toTarget.z).normalize();
     }
 
+    private void updatePokeTarget(LocalPlayer player) {
+        if (pokeTarget != null && (!pokeTarget.isAlive()
+                || player.distanceToSqr(pokeTarget) > (ATTACK_RANGE + 0.4) * (ATTACK_RANGE + 0.4))) {
+            pokeTarget = null;
+            pokeTicks = 0;
+        }
+        boolean canPoke = creeperThreat != null && !shootStance && !usingBow
+                && !urgentEscape && cooldown <= 0;
+        if (!canPoke) {
+            pokeTarget = null;
+            pokeTicks = 0;
+            return;
+        }
+        if (pokeTarget == null) {
+            pokeTarget = findPokeTarget(player);
+            if (pokeTarget == null) return;
+        }
+        ItemStack hand = player.getMainHandItem();
+        if (hand.getItem() instanceof BowItem || hand.get(DataComponents.WEAPON) == null) {
+            if (selectWeaponItem(player)) weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+            return;
+        }
+        if (weaponSwapGrace > 0) return;
+        pokeTicks++;
+    }
+
+    private LivingEntity findPokeTarget(LocalPlayer player) {
+        AABB box = player.getBoundingBox().inflate(POKE_RANGE);
+        LivingEntity nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
+        for (LivingEntity entity : player.level().getEntitiesOfClass(LivingEntity.class, box,
+                e -> e != player && e.isAlive() && e instanceof Enemy && !Targeting.isCreeper(e))) {
+            double distance = player.distanceToSqr(entity);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearest = entity;
+            }
+        }
+        return nearest;
+    }
+
     private boolean eatIfNeeded(Minecraft client, LocalPlayer player) {
         if (eating) {
+            if ((shootStance || usingBow || urgentEscape) && player.isUsingItem()) {
+                player.releaseUsingItem();
+                client.options.keyUse.setDown(false);
+                eating = false;
+                if (previousCombatSlot >= 0) {
+                    player.getInventory().setSelectedSlot(previousCombatSlot);
+                    previousCombatSlot = -1;
+                    weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+                }
+                return false;
+            }
             if (player.isUsingItem()) {
                 client.options.keyUse.setDown(true);
                 return true;
@@ -303,12 +362,14 @@ public class ClientAutoPlayManager {
             if (previousCombatSlot >= 0) {
                 player.getInventory().setSelectedSlot(previousCombatSlot);
                 previousCombatSlot = -1;
+                weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
             }
             return false;
         }
         if (player.getFoodData().getFoodLevel() >= 18
-            || (fleeingCreeper && creeperThreat != null
-            && player.distanceTo(creeperThreat) < CREEPER_FLEE_DISTANCE)) return false;
+            || shootStance || usingBow || urgentEscape
+            || (creeperThreat != null
+                && player.distanceTo(creeperThreat) < CREEPER_FLEE_DISTANCE)) return false;
         for (int slot = 0; slot < Math.min(9, player.getInventory().getContainerSize()); slot++) {
             ItemStack stack = player.getInventory().getItem(slot);
             if (!stack.isEmpty() && stack.get(DataComponents.FOOD) != null && player.canEat(false)) {
@@ -322,6 +383,7 @@ public class ClientAutoPlayManager {
                 }
                 if (player.isUsingItem()) {
                     eating = true;
+                    weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
                     return true;
                 }
                 player.getInventory().setSelectedSlot(previousCombatSlot);
@@ -355,9 +417,9 @@ public class ClientAutoPlayManager {
             return null;
         }
 
-        boolean descending = currentTarget != null
+        boolean descending = creeperThreat == null && currentTarget != null
                 && currentTarget.getY() < player.getY() - 1.5;
-        int maxDrop = descending && !fleeingCreeper
+        int maxDrop = descending
             ? TerrainScanner.MAX_CONTROLLED_DESCENT : TerrainScanner.MAX_SAFE_DROP;
 
         StepResult straight = TerrainScanner.evaluateStep(player.level(), player.position(), desiredDir, maxDrop);
@@ -373,7 +435,7 @@ public class ClientAutoPlayManager {
         }
 
         if (lockedAvoidDir != null && avoidLockTicksLeft > 0) {
-            double angleDeg = Math.toDegrees(Math.acos(Math.clamp(
+            double angleDeg = Math.toDegrees(Math.acos(Mth.clamp(
                     lockedAvoidDir.dot(desiredDir), -1.0, 1.0)));
             StepResult lockedStep = TerrainScanner.evaluateStep(
                     player.level(), player.position(), lockedAvoidDir, maxDrop);
@@ -402,38 +464,57 @@ public class ClientAutoPlayManager {
         return (float) Math.toDegrees(Math.atan2(dir.z, dir.x)) - 90.0f;
     }
 
-    private void applyMovement(Minecraft client, LocalPlayer player, Vec3 moveDir, boolean swimming) {
-        boolean fwd = false, sprint = false, jump = false;
-        boolean retreating = fleeingCreeper && creeperThreat != null;
-        moveHeadingActive = moveDir != null;
+    private float pitchTo(LocalPlayer player, Vec3 point) {
+        Vec3 aim = point.subtract(player.getEyePosition());
+        return (float) -Math.toDegrees(Math.atan2(aim.y, Math.sqrt(aim.x * aim.x + aim.z * aim.z)));
+    }
 
-        if (moveDir != null) {
+    private Vec3 bowAimPoint(LocalPlayer player, Creeper creeper) {
+        Vec3 center = bodyCenter(creeper);
+        Vec3 vel = creeper.getDeltaMovement();
+        double dist = player.getEyePosition().distanceTo(center);
+        int flightTicks = (int) Math.max(1.0, dist / 3.0);
+        Vec3 lead = new Vec3(vel.x * flightTicks, 0, vel.z * flightTicks);
+        if (lead.lengthSqr() > 2.5 * 2.5) lead = lead.normalize().scale(2.5);
+        double drop = Math.min(dist * dist * 0.003, 1.6);
+        return center.add(lead).add(0.0, drop, 0.0);
+    }
+
+    private void applyMovement(Minecraft client, LocalPlayer player, Vec3 moveDir, boolean swimming) {
+        boolean fwd = false, back = false, sprint = false, jump = false;
+        if (creeperThreat != null) {
+            if (urgentEscape) {
+                if (usingBow) {
+                    back = moveDir != null;
+                } else {
+                    fwd = moveDir != null;
+                    sprint = fwd && player.onGround() && !swimming;
+                }
+            } else if (shootStance) {
+                fwd = false;
+                back = false;
+            } else {
+                back = moveDir != null;
+            }
+        } else if (moveDir != null) {
             boolean nearTarget = currentTarget != null
                     && player.distanceToSqr(currentTarget) <= BRAKE_RANGE_SQR;
-                fwd = !retreating && !nearTarget;
-
-                Vec3 facingDir = retreating
-                    ? creeperThreat.position().subtract(player.position())
-                    : moveDir;
-                float targetYaw = headingYawOf(new Vec3(facingDir.x, 0, facingDir.z).normalize());
-            camera.steer(targetYaw, camera.getPitch(), MOVE_HEADING_SMOOTHING);
-
+            fwd = !nearTarget;
             boolean farAway = currentTarget != null
-                    ? player.distanceToSqr(currentTarget) >= SPRINT_DISTANCE_SQR
-                    : fleeingCreeper;
+                    && player.distanceToSqr(currentTarget) >= SPRINT_DISTANCE_SQR;
             sprint = farAway && player.onGround() && !swimming && !needJumpAhead;
+        }
 
-            if (jumpPulseTicks > 0) {
-                jumpPulseTicks--;
-                jump = true;
-            } else if (needJumpAhead && player.onGround()) {
-                jumpPulseTicks = 5;
-                jump = true;
-            }
+        if (jumpPulseTicks > 0) {
+            jumpPulseTicks--;
+            jump = true;
+        } else if (needJumpAhead && player.onGround() && (fwd || back)) {
+            jumpPulseTicks = 5;
+            jump = true;
         }
 
         client.options.keyUp.setDown(fwd);
-        client.options.keyDown.setDown(retreating && moveDir != null);
+        client.options.keyDown.setDown(back);
         client.options.keyLeft.setDown(false);
         client.options.keyRight.setDown(false);
         client.options.keySprint.setDown(sprint);
@@ -462,29 +543,71 @@ public class ClientAutoPlayManager {
             avoidLockTicksLeft = 0;
             stuckTicks = 0;
             lastProgressPos = null;
-            if (stuckEvents >= STUCK_EVENTS_BEFORE_BLACKLIST && !fleeingCreeper) {
+            if (stuckEvents >= STUCK_EVENTS_BEFORE_BLACKLIST && creeperThreat == null) {
                 blacklistCurrentTarget();
                 resetNavigationMemory();
             }
         }
     }
 
-    private void steerCamera(LocalPlayer player, Vec3 aimPoint) {
-        steerCamera(player, aimPoint, null);
-    }
+    private void updateCameraAndApply(LocalPlayer player, Vec3 moveDir) {
+        Float rawYaw = null;
+        Float rawPitch = null;
+        float responsiveness = HEADING_SMOOTHING;
+        float maxYaw = MAX_YAW_SPEED_HEADING;
+        float maxPitch = MAX_PITCH_SPEED_HEADING;
 
-    private void steerCamera(LocalPlayer player, Vec3 aimPoint, Float yawGoal) {
-        float targetYaw = yawGoal != null ? yawGoal : camera.getYaw();
-        float targetPitch;
-        if (aimPoint != null) {
-            Vec3 eye = player.getEyePosition();
-            Vec3 aim = aimPoint.subtract(eye);
-            targetPitch = (float) -Math.toDegrees(Math.atan2(aim.y, Math.sqrt(aim.x * aim.x + aim.z * aim.z)));
-        } else {
-            targetPitch = 0.0f;
+        if (pokeTarget != null) {
+            rawYaw = headingYawOf(pokeTarget.position().subtract(player.position()));
+            rawPitch = pitchTo(player, bodyCenter(pokeTarget));
+            responsiveness = FAST_SMOOTHING;
+            maxYaw = MAX_YAW_SPEED_FAST;
+        } else if (creeperThreat != null) {
+            boolean faceAway = urgentEscape && !usingBow;
+            Vec3 to = faceAway
+                    ? player.position().subtract(creeperThreat.position())
+                    : creeperThreat.position().subtract(player.position());
+            rawYaw = headingYawOf(new Vec3(to.x, 0, to.z));
+            if (!faceAway) {
+                boolean aiming = shootStance || usingBow;
+                Vec3 aim = aiming ? bowAimPoint(player, creeperThreat) : bodyCenter(creeperThreat);
+                rawPitch = pitchTo(player, aim);
+                responsiveness = AIM_SMOOTHING;
+                if (aiming) {
+                    maxYaw = MAX_YAW_SPEED_AIM;
+                    maxPitch = MAX_PITCH_SPEED_AIM;
+                }
+            }
+        } else if (moveDir != null) {
+            rawYaw = headingYawOf(moveDir);
+            rawPitch = 0.0f;
+        } else if (currentTarget != null) {
+            Vec3 toT = currentTarget.position().subtract(player.position());
+            if (toT.horizontalDistanceSqr() > 1.0E-4) {
+                rawYaw = headingYawOf(new Vec3(toT.x, 0, toT.z));
+            }
+            rawPitch = pitchTo(player, bodyCenter(currentTarget));
+            responsiveness = AIM_SMOOTHING;
+            maxYaw = MAX_YAW_SPEED_AIM;
+            maxPitch = MAX_PITCH_SPEED_AIM;
         }
-        float smoothing = moveHeadingActive ? MOVE_HEADING_SMOOTHING : CAMERA_SMOOTHING;
-        camera.steer(targetYaw, targetPitch, smoothing);
+
+        if (rawYaw == null) rawYaw = camera.getYaw();
+        if (rawPitch == null) rawPitch = 0.0f;
+
+        if (!smoothGoalsInitialized) {
+            smoothYawGoal = rawYaw;
+            smoothPitchGoal = rawPitch;
+            smoothGoalsInitialized = true;
+        } else {
+            smoothYawGoal = Mth.wrapDegrees(
+                    smoothYawGoal + Mth.degreesDifference(smoothYawGoal, rawYaw) * GOAL_TRACK_SMOOTHING);
+            smoothPitchGoal = Mth.clamp(
+                    smoothPitchGoal + (rawPitch - smoothPitchGoal) * GOAL_TRACK_SMOOTHING,
+                    -89.9f, 89.9f);
+        }
+
+        camera.steer(smoothYawGoal, smoothPitchGoal, responsiveness, maxYaw, maxPitch);
         player.setYRot(camera.getYaw());
         player.setXRot(camera.getPitch());
     }
@@ -499,65 +622,127 @@ public class ClientAutoPlayManager {
 
     private void combatTick(Minecraft client, LocalPlayer player, LivingEntity target) {
         double distSqr = player.distanceToSqr(target);
-        boolean targetIsCreeper = Targeting.isCreeper(target);
-        boolean wantsBow = targetIsCreeper && hasBowAndArrows(player);
-        selectCombatWeapon(player, wantsBow);
-        ItemStack handStack = player.getMainHandItem();
-        boolean isBow = handStack.getItem() instanceof BowItem;
 
-        if (isBow) {
-            boolean inBowRange = distSqr >= BOW_MIN_RANGE * BOW_MIN_RANGE
-                    && distSqr <= BOW_MAX_RANGE * BOW_MAX_RANGE;
-            boolean safeDistance = !targetIsCreeper
-                    || Math.sqrt(distSqr) >= Targeting.CREEPER_SAFE_DISTANCE - 1.0;
-            boolean clearShot = inBowRange && safeDistance && hasClearShot(player, target);
-            if (clearShot) {
-                if (!usingBow) {
-                    if (client.gameMode != null) {
-                        client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
-                    } else {
-                        player.startUsingItem(InteractionHand.MAIN_HAND);
-                    }
-                    usingBow = true;
-                    bowTicks = 0;
-                } else {
-                    bowTicks++;
-                }
-                client.options.keyUse.setDown(true);
-                if (bowTicks >= BOW_HOLD_TICKS) {
-                    if (client.gameMode != null) client.gameMode.releaseUsingItem(player);
-                    else player.releaseUsingItem();
-                    client.options.keyUse.setDown(false);
-                    usingBow = false;
-                    cooldown = ATTACK_COOLDOWN;
-                }
-            } else if (usingBow) {
-                if (client.gameMode != null) client.gameMode.releaseUsingItem(player);
-                else player.releaseUsingItem();
-                client.options.keyUse.setDown(false);
-                usingBow = false;
+        if (target instanceof Creeper creeper && creeper == creeperThreat) {
+            if (pokeTarget != null) {
+                strikePokeTarget(client, player);
+                return;
             }
-        } else {
-            if (usingBow) {
-                stopBowUse(client, player);
+            creeperCombat(client, player, creeper, Math.sqrt(distSqr));
+            return;
+        }
+
+        if (usingBow) cancelDraw(client, player);
+        ItemStack handStack = player.getMainHandItem();
+        boolean holdingBow = handStack.getItem() instanceof BowItem;
+        boolean hasMeleeWeapon = !holdingBow && handStack.get(DataComponents.WEAPON) != null;
+        if (!hasMeleeWeapon) {
+            if (weaponSwapGrace > 0) return;
+            if (selectWeaponItem(player)) weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+            return;
+        }
+        if (weaponSwapGrace > 0) return;
+        if (distSqr <= ATTACK_RANGE * ATTACK_RANGE && cooldown <= 0) {
+            if (client.gameMode != null) {
+                client.gameMode.attack(player, target);
             }
-            boolean meleeSafe = !(targetIsCreeper && Math.sqrt(distSqr) < Targeting.CREEPER_SAFE_DISTANCE - 1.0);
-            boolean hasMeleeWeapon = !(player.getMainHandItem().getItem() instanceof BowItem)
-                    && player.getMainHandItem().get(DataComponents.WEAPON) != null;
-            if (hasMeleeWeapon && distSqr <= ATTACK_RANGE * ATTACK_RANGE
-                    && cooldown <= 0 && meleeSafe) {
-                if (client.gameMode != null) {
-                    client.gameMode.attack(player, target);
-                }
-                player.swing(InteractionHand.MAIN_HAND, true);
-                cooldown = ATTACK_COOLDOWN;
-            }
+            player.swing(InteractionHand.MAIN_HAND, true);
+            cooldown = ATTACK_COOLDOWN;
         }
     }
 
-    private void selectCombatWeapon(LocalPlayer player, boolean preferBow) {
-        if (preferBow && hasBowAndArrows(player) && selectHotbarItem(player, BowItem.class)) return;
-        selectWeaponItem(player);
+    private void strikePokeTarget(Minecraft client, LocalPlayer player) {
+        double distSqr = player.distanceToSqr(pokeTarget);
+        if (distSqr > (ATTACK_RANGE + 0.2) * (ATTACK_RANGE + 0.2)) {
+            pokeTarget = null;
+            pokeTicks = 0;
+            return;
+        }
+        Vec3 to = pokeTarget.position().subtract(player.position());
+        float targetYaw = headingYawOf(new Vec3(to.x, 0, to.z));
+        float angle = Math.abs(Mth.degreesDifference(camera.getYaw(), targetYaw));
+        if (angle <= POKE_CONE_DEG || pokeTicks >= POKE_AIM_MAX_TICKS) {
+            if (client.gameMode != null) {
+                client.gameMode.attack(player, pokeTarget);
+            }
+            player.swing(InteractionHand.MAIN_HAND, true);
+            cooldown = ATTACK_COOLDOWN;
+            pokeTarget = null;
+            pokeTicks = 0;
+        }
+    }
+
+    private void creeperCombat(Minecraft client, LocalPlayer player, Creeper creeper, double dist) {
+        if (weaponSwapGrace > 0) return;
+
+        if ((shootStance || usingBow) && hasBowAndArrows(player)) {
+            ItemStack hand = player.getMainHandItem();
+            if (!(hand.getItem() instanceof BowItem)) {
+                if (selectHotbarItem(player, BowItem.class)) {
+                    weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+                }
+                return;
+            }
+            if (!player.isUsingItem()) {
+                if (usingBow && bowDrawVerify > 0) {
+                    usingBow = false;
+                    bowTicks = 0;
+                    bowDrawVerify = 0;
+                    weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+                    return;
+                }
+                if (client.gameMode != null) {
+                    client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+                } else {
+                    player.startUsingItem(InteractionHand.MAIN_HAND);
+                }
+                usingBow = true;
+                bowTicks = 0;
+                bowDrawVerify = 2;
+                client.options.keyUse.setDown(true);
+            } else {
+                bowDrawVerify = 0;
+                bowTicks++;
+                if (dist < DRAW_ABORT_DIST) {
+                    if (bowTicks >= MIN_CHARGE_TO_RELEASE_EARLY) {
+                        fireBow(client, player);
+                        cooldown = ATTACK_COOLDOWN;
+                    } else {
+                        cancelDraw(client, player);
+                    }
+                    return;
+                }
+                client.options.keyUse.setDown(true);
+                if (bowTicks >= BOW_HOLD_TICKS) {
+                    fireBow(client, player);
+                    cooldown = ATTACK_COOLDOWN;
+                }
+            }
+            return;
+        }
+
+        if (!urgentEscape && cooldown <= 0 && dist <= POKE_RANGE && forceEscapeTicks <= 0) {
+            ItemStack hand = player.getMainHandItem();
+            if (hand.getItem() instanceof BowItem || hand.get(DataComponents.WEAPON) == null) {
+                if (selectWeaponItem(player)) weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+                return;
+            }
+            if (client.gameMode != null) {
+                client.gameMode.attack(player, creeper);
+            }
+            player.swing(InteractionHand.MAIN_HAND, true);
+            cooldown = ATTACK_COOLDOWN;
+            forceEscapeTicks = FORCE_ESCAPE_TICKS;
+        }
+    }
+
+    private void fireBow(Minecraft client, LocalPlayer player) {
+        if (client.gameMode != null) client.gameMode.releaseUsingItem(player);
+        else player.releaseUsingItem();
+        client.options.keyUse.setDown(false);
+        usingBow = false;
+        bowTicks = 0;
+        bowDrawVerify = 0;
     }
 
     private boolean hasBowAndArrows(LocalPlayer player) {
@@ -621,12 +806,22 @@ public class ClientAutoPlayManager {
         return nearest;
     }
 
-    private void stopBowUse(Minecraft client, LocalPlayer player) {
-        if (client.gameMode != null) client.gameMode.releaseUsingItem(player);
-        else player.releaseUsingItem();
+    private void cancelDraw(Minecraft client, LocalPlayer player) {
         client.options.keyUse.setDown(false);
         usingBow = false;
         bowTicks = 0;
+        bowDrawVerify = 0;
+        if (player.isUsingItem()) {
+            player.stopUsingItem();
+            int selectedSlot = player.getInventory().getSelectedSlot();
+            if (!selectWeaponItem(player)) {
+                int size = Math.min(9, player.getInventory().getContainerSize());
+                if (size > 1) {
+                    player.getInventory().setSelectedSlot((selectedSlot + 1) % size);
+                }
+            }
+            weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+        }
     }
 
     private boolean isTargetValid(LocalPlayer player, LivingEntity target) {
@@ -706,11 +901,13 @@ public class ClientAutoPlayManager {
         }
         if (dir != null) {
             client.options.keyUp.setDown(true);
-            camera.steer(headingYawOf(dir), camera.getPitch(), MOVE_HEADING_SMOOTHING);
+            camera.steer(headingYawOf(dir), camera.getPitch(),
+                    HEADING_SMOOTHING, MAX_YAW_SPEED_HEADING, MAX_PITCH_SPEED_HEADING);
             player.setYRot(camera.getYaw());
         } else {
             client.options.keyUp.setDown(false);
         }
+        smoothGoalsInitialized = false;
     }
 
     private void releaseAllKeys(Minecraft client) {
@@ -737,7 +934,15 @@ public class ClientAutoPlayManager {
         stuckEvents = 0;
         jumpPulseTicks = 0;
         usingBow = false;
-        fleeingCreeper = false;
+        bowTicks = 0;
+        bowDrawVerify = 0;
+        shootStance = false;
+        urgentEscape = false;
+        weaponSwapGrace = 0;
+        forceEscapeTicks = 0;
+        pokeTarget = null;
+        pokeTicks = 0;
+        smoothGoalsInitialized = false;
         creeperThreat = null;
         lockedAvoidDir = null;
         avoidLockTicksLeft = 0;
