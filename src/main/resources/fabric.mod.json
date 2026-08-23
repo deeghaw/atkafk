@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "automine",
+  "version": "${version}",
+  "name": "AutoMine Mod",
+  "description": "Mod de autoplay estilo RPG idle para Minecraft - combate automático contra monstros",
+  "authors": [
+    "AutoMine Dev"
+  ],
+  "contact": {
+    "homepage": "https://github.com/automine/automine-mod",
+    "sources": "https://github.com/automine/automine-mod"
+  },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.automine.AutoMineMod.AutoMineMod"
+    ],
+    "client": [
+      "com.automine.AutoMineMod.client.AutoMineModClient"
+    ]
+  },
+  "mixins": [
+    "automine.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "fabric-key-binding-api-v1": "*"
+  }
+}
