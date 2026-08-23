@@ -17,7 +17,6 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
 
 import java.util.HashMap;
 import java.util.List;
@@ -25,7 +24,6 @@ import java.util.Map;
 import java.util.UUID;
 
 public class AutoPlayManager {
-    private static final double SEARCH_RADIUS = 32.0;
     private static final int SPAWN_INTERVAL = 100;
     private static final double SPAWN_DISTANCE = 12.0;
     private static final double RARE_LOOT_CHANCE = 0.08;
@@ -80,15 +78,11 @@ public class AutoPlayManager {
     private boolean isTargetValid(ServerPlayer player, LivingEntity target) {
         return target.isAlive()
                 && player.level().getEntity(target.getId()) != null
-                && player.distanceToSqr(target) <= SEARCH_RADIUS * SEARCH_RADIUS;
+                && Targeting.withinTargetRange(player, target);
     }
 
     private LivingEntity findBestTarget(ServerPlayer player) {
-        Vec3 pos = player.position();
-        AABB box = new AABB(
-                pos.x - SEARCH_RADIUS, pos.y - SEARCH_RADIUS, pos.z - SEARCH_RADIUS,
-                pos.x + SEARCH_RADIUS, pos.y + SEARCH_RADIUS, pos.z + SEARCH_RADIUS
-        );
+        AABB box = Targeting.targetSearchBox(player);
 
         List<LivingEntity> list = player.level().getEntitiesOfClass(LivingEntity.class, box,
                 e -> e != player && e.isAlive() && e instanceof Enemy && !Targeting.isAquatic(e));
@@ -109,7 +103,10 @@ public class AutoPlayManager {
     }
 
     private boolean hasActiveEnemy(ServerPlayer player) {
-        AABB box = player.getBoundingBox().inflate(SEARCH_RADIUS);
+        AABB box = player.getBoundingBox().inflate(
+                Targeting.TARGET_RADIUS_HORIZONTAL,
+                Targeting.TARGET_RANGE_VERTICAL,
+                Targeting.TARGET_RADIUS_HORIZONTAL);
         return !player.level().getEntitiesOfClass(LivingEntity.class, box,
                 e -> e != player && e.isAlive() && e instanceof Enemy && !Targeting.isAquatic(e)).isEmpty();
     }

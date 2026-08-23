@@ -65,7 +65,8 @@ O arquivo JAR será gerado em `build/libs/`.
 ### Configurações Avançadas
 Você pode modificar os seguintes valores no arquivo `AutoPlayManager.java`:
 
-- `SEARCH_RADIUS`: Raio de busca por monstros (padrão: 32.0 blocos)
+- `Targeting.TARGET_RADIUS_HORIZONTAL`: Raio horizontal de busca por monstros (padrão: 48.0 blocos)
+- `Targeting.TARGET_RANGE_VERTICAL`: Faixa vertical de busca, acima/abaixo do jogador (padrão: 6.0 blocos) — evita engajar alvos no subsolo
 - `ATTACK_RANGE`: Alcance de ataque (padrão: 4.0 blocos)
 - `ATTACK_COOLDOWN`: Cooldown entre ataques em ticks (padrão: 10 ticks = 0.5 segundos)
 

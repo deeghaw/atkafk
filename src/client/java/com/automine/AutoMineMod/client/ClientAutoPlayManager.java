@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Map;
 
 public class ClientAutoPlayManager {
-    private static final double SEARCH_RADIUS = 32.0;
     private static final double ATTACK_RANGE = 3.2;
     private static final double BOW_MAX_RANGE = 18.0;
     private static final double SHOOT_MIN_DIST = Targeting.CREEPER_SAFE_DISTANCE + 1.5;
@@ -849,7 +848,7 @@ public class ClientAutoPlayManager {
     private boolean isTargetValid(LocalPlayer player, LivingEntity target) {
         return target.isAlive()
                 && player.level().getEntity(target.getId()) != null
-                && player.distanceToSqr(target) <= SEARCH_RADIUS * SEARCH_RADIUS;
+                && Targeting.withinTargetRange(player, target);
     }
 
     private void resetTargetProgressIfNeeded() {
@@ -884,11 +883,7 @@ public class ClientAutoPlayManager {
     }
 
     private LivingEntity findBestTarget(LocalPlayer player) {
-        Vec3 pos = player.position();
-        AABB box = new AABB(
-                pos.x - SEARCH_RADIUS, pos.y - SEARCH_RADIUS, pos.z - SEARCH_RADIUS,
-                pos.x + SEARCH_RADIUS, pos.y + SEARCH_RADIUS, pos.z + SEARCH_RADIUS
-        );
+        AABB box = Targeting.targetSearchBox(player);
 
         List<LivingEntity> list = player.level().getEntitiesOfClass(LivingEntity.class, box,
             e -> e != player && e.isAlive() && e instanceof Enemy && !Targeting.isAquatic(e)
