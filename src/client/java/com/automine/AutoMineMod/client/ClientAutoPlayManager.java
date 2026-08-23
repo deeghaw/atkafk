@@ -90,6 +90,7 @@ public class ClientAutoPlayManager {
     private int stuckEvents = 0;
     private int jumpPulseTicks = 0;
     private Creeper creeperThreat = null;
+    private boolean creeperFleeBlocked = false;
 
     private Vec3 lockedAvoidDir = null;
     private int avoidLockTicksLeft = 0;
@@ -136,8 +137,12 @@ public class ClientAutoPlayManager {
 
         creeperThreat = Targeting.findNearestCreeper(player, Targeting.CREEPER_FLEE_RADIUS);
         double creeperDist = creeperThreat != null ? player.distanceTo(creeperThreat) : Double.MAX_VALUE;
+        creeperFleeBlocked = creeperThreat != null
+            && TerrainScanner.chooseFleeDirection(
+                player.level(), player.position(), creeperThreat.position(),
+                TerrainScanner.MAX_CONTROLLED_DESCENT, TerrainScanner.HAZARD_MARGIN) == null;
         urgentEscape = creeperThreat != null
-                && (creeperDist < CREEPER_DANGER_DIST || forceEscapeTicks > 0);
+            && ((!creeperFleeBlocked && creeperDist < CREEPER_DANGER_DIST) || forceEscapeTicks > 0);
 
         if (creeperThreat != null) {
             currentTarget = creeperThreat;
@@ -163,7 +168,10 @@ public class ClientAutoPlayManager {
         boolean wantShoot = creeperThreat != null && bowReady && !urgentEscape && cooldown <= 0
                 && creeperDist >= SHOOT_MIN_DIST && creeperDist <= BOW_MAX_RANGE
                 && hasClearShot(player, creeperThreat);
-        if (wantShoot || (usingBow && creeperThreat != null && !urgentEscape)) {
+        boolean emergencyBowShot = creeperThreat != null && bowReady && creeperFleeBlocked
+            && hasClearShot(player, creeperThreat);
+        if (wantShoot || emergencyBowShot
+            || (usingBow && creeperThreat != null && !urgentEscape)) {
             shootStance = true;
         } else {
             shootStance = false;
@@ -276,7 +284,15 @@ public class ClientAutoPlayManager {
         }
 
         if (creeperThreat != null) {
-            if (shootStance) return null;
+            if (!hasBowAndArrows(player)) {
+                Vec3 toCreeper = creeperThreat.position().subtract(player.position());
+                Vec3 flatToCreeper = new Vec3(toCreeper.x, 0, toCreeper.z);
+                if (flatToCreeper.lengthSqr() > ATTACK_RANGE * ATTACK_RANGE * 0.6) {
+                    return flatToCreeper.normalize();
+                }
+                return null;
+            }
+            if (shootStance || creeperFleeBlocked) return null;
             Vec3 away = player.position().subtract(creeperThreat.position());
             Vec3 flatAway = new Vec3(away.x, 0, away.z);
             if (flatAway.lengthSqr() > 1.0E-4) return flatAway.normalize();
@@ -422,7 +438,7 @@ public class ClientAutoPlayManager {
             ? TerrainScanner.MAX_CONTROLLED_DESCENT : TerrainScanner.MAX_SAFE_DROP;
         double margin = TerrainScanner.HAZARD_MARGIN;
 
-        if (creeperThreat != null) {
+        if (creeperThreat != null && hasBowAndArrows(player) && !creeperFleeBlocked) {
             int fleeMaxDrop = Math.max(maxDrop, TerrainScanner.MAX_CONTROLLED_DESCENT);
             Vec3 flee = TerrainScanner.chooseFleeDirection(
                     player.level(), player.position(), creeperThreat.position(), fleeMaxDrop, margin);
@@ -742,7 +758,7 @@ public class ClientAutoPlayManager {
             return;
         }
 
-        if (!urgentEscape && cooldown <= 0 && dist <= POKE_RANGE && forceEscapeTicks <= 0) {
+        if (!hasBowAndArrows(player) && cooldown <= 0 && dist <= POKE_RANGE) {
             ItemStack hand = player.getMainHandItem();
             if (hand.getItem() instanceof BowItem || hand.get(DataComponents.WEAPON) == null) {
                 if (selectWeaponItem(player)) weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;

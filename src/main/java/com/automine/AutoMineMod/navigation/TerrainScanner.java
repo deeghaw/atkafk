@@ -244,7 +244,7 @@ public final class TerrainScanner {
                 best = candidate.normalize();
             }
         }
-        return best != null ? best : away;
+        return best;
     }
 
     public static boolean hasVisibleRoute(Level level, Vec3 from, Vec3 to) {
