@@ -1,11 +1,15 @@
 package com.automine.AutoMineMod.client;
 
 import com.automine.AutoMineMod.AutoMineMod;
+import com.automine.AutoMineMod.client.ai.AiConfig;
+import com.automine.AutoMineMod.client.ai.AutonomousAgent;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.resources.Identifier;
 import org.lwjgl.glfw.GLFW;
@@ -17,6 +21,7 @@ public class AutoMineModClient implements ClientModInitializer {
 
     private static KeyMapping autoPlayKey;
     private static ClientAutoPlayManager clientAutoPlayManager;
+    private static AutonomousAgent agent;
 
     @Override
     public void onInitializeClient() {
@@ -27,17 +32,27 @@ public class AutoMineModClient implements ClientModInitializer {
                 CATEGORY
         ));
 
-        // create client manager and enable autoplay client-side for testing visuals
-        clientAutoPlayManager = new ClientAutoPlayManager();
+        agent = new AutonomousAgent(AiConfig.load());
+        clientAutoPlayManager = new ClientAutoPlayManager(agent);
         AutoMineMod.autoPlayEnabled = true;
 
-        // server->client networking receiver removed temporarily
+        ClientReceiveMessageEvents.CHAT.register((message, signed, sender, params, receptionTimestamp) -> {
+            String name = sender != null ? sender.name() : "?";
+            agent.addChat(name + ": " + message.getString());
+        });
+        ClientSendMessageEvents.ALLOW_CHAT.register(message -> {
+            if (message.startsWith("!ai ")) {
+                agent.setTask(message.substring(4).trim());
+                AutoMineMod.LOGGER.info("Tarefa da IA atualizada pelo chat");
+                return false;
+            }
+            return true;
+        });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (autoPlayKey.consumeClick()) {
                 toggleAutoPlay();
             }
-            // run client autoplay logic each tick (visual movement/animations)
             if (clientAutoPlayManager != null) {
                 clientAutoPlayManager.tick(client);
             }

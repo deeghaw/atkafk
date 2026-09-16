@@ -29,6 +29,7 @@ Thumbs.db
 crash-reports/
 logs/
 run/
+config/automine-ai.json
 
 # User-specific
 *.local

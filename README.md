@@ -1,6 +1,6 @@
 # AutoMine Mod
 
-Mod de autoplay estilo RPG idle para Minecraft 26.2 com Fabric API. O personagem explora, se alimenta e combate monstros sozinho.
+Mod de autoplay estilo RPG idle para Minecraft 26.2 com Fabric API. O personagem explora, se alimenta e combate monstros sozinho. Com a API do Google AI (Gemini), ele passa a escolher sozinho o que fazer a cada poucos segundos — combate, coleta, exploração, fuga ou espera — no estilo do projeto [Minecraft_AI](https://github.com/Mai-xiyu/Minecraft_AI), mas rodando dentro do cliente Fabric.
 
 ## Funcionalidades
 
@@ -12,6 +12,9 @@ Mod de autoplay estilo RPG idle para Minecraft 26.2 com Fabric API. O personagem
 - **Exploração**: Escolhe direções seguras e continua andando quando a área está tranquila
 - **Sistema de Toggle**: Ativa/desativa o autoplay com a tecla K (padrão)
 - **Suporte Multiplayer**: Funciona em servidores e singleplayer
+- **Agente Gemini**: decide intenções de alto nível (explorar, lutar, comer, fugir, ir até um ponto, coletar bloco, conversar)
+- **Reflexos locais**: lava, queda, creeper e fome crítica continuam no motor do mod, mesmo se a API falhar
+- **Memória curta**: o modelo vê o resultado da última ação e evita repetir estratégia sem progresso
 
 ## Requisitos
 
@@ -55,12 +58,36 @@ O arquivo JAR será gerado em `build/libs/`.
 
 4. **Inicie o jogo**:
    - O mod será carregado automaticamente
-   - No jogo, pressione a tecla **K** para ativar/desativar o AutoPlay
+   - No jogo, pressione a tecla **J** para ativar/desativar o AutoPlay
 
 ## Configuração
 
 ### Controles Padrão
-- **Tecla K**: Ativar/Desativar AutoPlay
+- **Tecla J**: Ativar/Desativar AutoPlay
+- **Chat `!ai ...`**: define a tarefa atual da IA (não envia a mensagem ao servidor)
+
+### Agente Google AI (Gemini)
+
+1. Crie uma chave em [Google AI Studio](https://aistudio.google.com/apikey)
+2. Defina a variável de ambiente `GOOGLE_AI_API_KEY` **ou** edite `config/automine-ai.json` na pasta do jogo:
+
+```json
+{
+  "enabled": true,
+  "apiKey": "",
+  "model": "gemini-2.5-flash",
+  "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+  "temperature": 0.7,
+  "maxTokens": 512,
+  "decisionIntervalTicks": 40,
+  "task": "Sobreviver, explorar o mundo e evoluir de forma autonoma.",
+  "useCache": true
+}
+```
+
+A variável de ambiente tem prioridade sobre o arquivo. Sem chave, o autoplay scriptado antigo continua funcionando.
+
+A barra de ação no jogo mostra o status da IA. Depois de 5 erros seguidos da API, a IA pausa e o comportamento local assume.
 
 ### Configurações Avançadas
 Você pode modificar os seguintes valores no arquivo `AutoPlayManager.java`:
@@ -73,7 +100,7 @@ Você pode modificar os seguintes valores no arquivo `AutoPlayManager.java`:
 ## Uso
 
 1. Entre no mundo do Minecraft
-2. Pressione a tecla **K** para ativar o AutoPlay
+2. Pressione a tecla **J** para ativar o AutoPlay
 3. O personagem começará a explorar, comer e atacar monstros automaticamente
 4. Pressione **K** novamente para desativar
 

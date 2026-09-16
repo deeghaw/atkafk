@@ -1,7 +1,10 @@
 package com.automine.AutoMineMod.client;
 
 import com.automine.AutoMineMod.AutoMineMod;
+import com.automine.AutoMineMod.client.ai.AiIntent;
+import com.automine.AutoMineMod.client.ai.AutonomousAgent;
 import com.automine.AutoMineMod.navigation.CameraSteering;
+import com.automine.AutoMineMod.navigation.HumanMovement;
 import com.automine.AutoMineMod.navigation.StepResult;
 import com.automine.AutoMineMod.navigation.Targeting;
 import com.automine.AutoMineMod.navigation.TerrainScanner;
@@ -9,6 +12,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.LivingEntity;
@@ -106,6 +111,33 @@ public class ClientAutoPlayManager {
     private int previousCombatSlot = -1;
     private boolean controlsActive = false;
 
+    // Human-like behavior state
+    private int gameTickCount = 0;
+    private int hesitationTicks = 0;
+    private boolean isHesitating = false;
+    private int lookAroundTicks = 0;
+    private float lookAroundYawTarget = 0;
+    private boolean isLookingAround = false;
+    private boolean strafeActive = false;
+    private int strafeBurstTicksLeft = 0;
+    private int strafeGapTicksLeft = 0;
+    private double strafeOffset = 0;
+
+    private final AutonomousAgent agent;
+    private AiIntent aiIntent;
+    private int aiHoldTicks;
+    private int ticksSinceAiDecision;
+    private boolean aiChatSent;
+    private BlockPos collectTarget;
+
+    public ClientAutoPlayManager() {
+        this(null);
+    }
+
+    public ClientAutoPlayManager(AutonomousAgent agent) {
+        this.agent = agent;
+    }
+
     public void tick(Minecraft client) {
         currentClient = client;
         LocalPlayer player = client.player;
@@ -129,6 +161,44 @@ public class ClientAutoPlayManager {
 
         if (client.gui.screen() != null) {
             releaseAllKeys(client);
+            return;
+        }
+
+        gameTickCount++;
+        tickAi(client, player);
+
+        if (isHesitating) {
+            hesitationTicks--;
+            if (hesitationTicks <= 0) {
+                isHesitating = false;
+            }
+            updateCameraAndApply(player, null);
+            return;
+        }
+
+        if (isLookingAround) {
+            lookAroundTicks--;
+            if (lookAroundTicks <= 0) {
+                isLookingAround = false;
+            }
+            updateCameraAndApply(player, null);
+            client.options.keyUp.setDown(false);
+            client.options.keyDown.setDown(false);
+            return;
+        }
+
+        if (HumanMovement.shouldHesitate() && !isHesitating && currentTarget == null && creeperThreat == null) {
+            isHesitating = true;
+            hesitationTicks = HumanMovement.getHesitationDuration();
+            updateCameraAndApply(player, null);
+            return;
+        }
+
+        if (HumanMovement.shouldLookAround() && !isLookingAround && currentTarget == null && creeperThreat == null) {
+            isLookingAround = true;
+            lookAroundTicks = HumanMovement.getLookAroundDuration();
+            lookAroundYawTarget = camera.getYaw() + HumanMovement.getLookAroundYaw();
+            updateCameraAndApply(player, null);
             return;
         }
 
@@ -163,7 +233,26 @@ public class ClientAutoPlayManager {
                 if (usingBow) cancelDraw(client, player);
                 currentTarget = nearbyThreat;
             }
+            if (aiWantsPeaceful() && currentTarget != null
+                    && player.distanceToSqr(currentTarget) > DEFENSE_RADIUS * DEFENSE_RADIUS) {
+                currentTarget = null;
+            }
         }
+
+        if (aiIntent != null && aiIntent.type() == AiIntent.Type.WAIT
+                && creeperThreat == null && currentTarget == null) {
+            updateCameraAndApply(player, null);
+            releaseMovementKeys(client);
+            client.options.keyAttack.setDown(false);
+            return;
+        }
+        if (aiIntent != null && aiIntent.type() == AiIntent.Type.LOOK_AROUND
+                && !isLookingAround && creeperThreat == null && currentTarget == null) {
+            isLookingAround = true;
+            lookAroundTicks = HumanMovement.getLookAroundDuration();
+            lookAroundYawTarget = camera.getYaw() + HumanMovement.getLookAroundYaw();
+        }
+
         resetTargetProgressIfNeeded();
         updateLastSafePos(player);
 
@@ -205,6 +294,7 @@ public class ClientAutoPlayManager {
         if (creeperThreat == null && currentTarget == null && !hasNearbyThreat(player)) {
             desiredDir = explorationDirection(player);
         }
+        desiredDir = applyAiDesiredDir(player, desiredDir);
         Vec3 moveDir = pickMoveDir(player, desiredDir);
         if (moveDir != null && isNearUnsafeDrop(player, moveDir)) {
             releaseMovementKeys(client);
@@ -222,11 +312,144 @@ public class ClientAutoPlayManager {
         }
 
         updateCameraAndApply(player, moveDir);
+        applyCollectMining(client, player, moveDir);
 
         if (currentTarget != null) {
             combatTick(client, player, currentTarget);
         } else if (usingBow) {
             cancelDraw(client, player);
+        }
+    }
+
+    private void tickAi(Minecraft client, LocalPlayer player) {
+        if (agent == null || !agent.isEnabled()) {
+            client.options.keyAttack.setDown(false);
+            return;
+        }
+        AiIntent next = agent.pollIntent();
+        if (next != null) {
+            aiIntent = next;
+            aiHoldTicks = next.holdTicks();
+            ticksSinceAiDecision = 0;
+            aiChatSent = false;
+            collectTarget = resolveCollectTarget(player, next);
+            if (next.type() == AiIntent.Type.CHAT && next.message() != null && !next.message().isBlank()) {
+                sendAiChat(client, next.message());
+            }
+        }
+        ticksSinceAiDecision++;
+        if (aiHoldTicks > 0) aiHoldTicks--;
+        int interval = Math.max(20, agent.config().decisionIntervalTicks);
+        if (aiHoldTicks <= 0 && ticksSinceAiDecision >= interval) {
+            agent.requestDecision(player);
+            ticksSinceAiDecision = 0;
+            aiHoldTicks = interval;
+        }
+        if (gameTickCount % 20 == 0) {
+            player.sendOverlayMessage(Component.literal(agent.statusLine()));
+        }
+    }
+
+    private void sendAiChat(Minecraft client, String message) {
+        if (aiChatSent || client.getConnection() == null) return;
+        String trimmed = message.length() > 100 ? message.substring(0, 100) : message;
+        client.getConnection().sendChat(trimmed);
+        aiChatSent = true;
+        agent.noteResult("chat enviado");
+    }
+
+    private Vec3 applyAiDesiredDir(LocalPlayer player, Vec3 scripted) {
+        if (agent == null || !agent.isEnabled() || aiIntent == null) return scripted;
+        if (creeperThreat != null || player.isInLava() || isFallingDangerously(player)) return scripted;
+        return switch (aiIntent.type()) {
+            case FLEE -> fleeDirection(player);
+            case GO_TO -> toward(player, aiIntent.x(), aiIntent.z());
+            case COLLECT -> collectTarget != null
+                    ? toward(player, collectTarget.getX() + 0.5, collectTarget.getZ() + 0.5)
+                    : scripted;
+            case EXPLORE -> {
+                if (aiIntent.yaw() != null) {
+                    double rad = Math.toRadians(aiIntent.yaw());
+                    yield new Vec3(-Math.sin(rad), 0, Math.cos(rad));
+                }
+                yield scripted;
+            }
+            case WAIT, LOOK_AROUND, CHAT -> null;
+            case EAT, COMBAT, IDLE -> scripted;
+        };
+    }
+
+    private Vec3 toward(LocalPlayer player, Double x, Double z) {
+        if (x == null || z == null) return null;
+        Vec3 to = new Vec3(x - player.getX(), 0, z - player.getZ());
+        if (to.horizontalDistanceSqr() < 1.0) {
+            if (agent != null) agent.noteResult("chegou ao destino");
+            return null;
+        }
+        return to.normalize();
+    }
+
+    private Vec3 fleeDirection(LocalPlayer player) {
+        LivingEntity threat = findNearestThreat(player);
+        if (threat == null) return explorationDirection(player);
+        Vec3 away = player.position().subtract(threat.position());
+        Vec3 flat = new Vec3(away.x, 0, away.z);
+        if (flat.lengthSqr() < 1.0E-4) return explorationDirection(player);
+        return flat.normalize();
+    }
+
+    private BlockPos resolveCollectTarget(LocalPlayer player, AiIntent intent) {
+        if (intent.blockPos() != null) return intent.blockPos();
+        String want = intent.blockType();
+        if (want == null || want.isBlank()) return null;
+        String needle = want.toLowerCase();
+        BlockPos origin = player.blockPosition();
+        BlockPos best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (int dx = -10; dx <= 10; dx++) {
+            for (int dy = -4; dy <= 5; dy++) {
+                for (int dz = -10; dz <= 10; dz++) {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    String id = BuiltInRegistries.BLOCK.getKey(player.level().getBlockState(pos).getBlock()).getPath();
+                    if (!id.contains(needle) && !needle.contains(id)) continue;
+                    double dist = player.distanceToSqr(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = pos;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private void applyCollectMining(Minecraft client, LocalPlayer player, Vec3 moveDir) {
+        boolean collecting = agent != null && agent.isEnabled()
+                && aiIntent != null && aiIntent.type() == AiIntent.Type.COLLECT
+                && collectTarget != null
+                && creeperThreat == null
+                && !usingBow
+                && !eating;
+        if (!collecting) {
+            if (currentTarget == null) client.options.keyAttack.setDown(false);
+            return;
+        }
+        if (player.level().getBlockState(collectTarget).isAir()) {
+            if (agent != null) agent.noteResult("bloco coletado");
+            collectTarget = resolveCollectTarget(player, aiIntent);
+            client.options.keyAttack.setDown(false);
+            return;
+        }
+        Vec3 look = Vec3.atCenterOf(collectTarget);
+        float yaw = headingYawOf(look.subtract(player.position()));
+        float pitch = pitchTo(player, look);
+        camera.steer(yaw, pitch, FAST_SMOOTHING, MAX_YAW_SPEED_FAST, MAX_PITCH_SPEED_HEADING);
+        player.setYRot(camera.getYaw());
+        player.setXRot(camera.getPitch());
+        boolean inReach = player.getEyePosition().distanceTo(look) < 4.8;
+        client.options.keyAttack.setDown(inReach);
+        if (moveDir == null && !inReach && agent != null) {
+            agent.noteResult("coleta sem caminho ate o bloco");
         }
     }
 
@@ -387,7 +610,8 @@ public class ClientAutoPlayManager {
             }
             return false;
         }
-        if (player.getFoodData().getFoodLevel() >= 18
+        int foodLimit = (aiIntent != null && aiIntent.type() == AiIntent.Type.EAT) ? 20 : 18;
+        if (player.getFoodData().getFoodLevel() >= foodLimit
             || shootStance || usingBow || urgentEscape
             || (creeperThreat != null
                 && player.distanceTo(creeperThreat) < CREEPER_FLEE_DISTANCE)) return false;
@@ -423,8 +647,23 @@ public class ClientAutoPlayManager {
     private Vec3 explorationDirection(LocalPlayer player) {
         if (--explorationTicks <= 0 || !TerrainScanner.evaluateStep(
                 player.level(), player.position(), explorationDir).walkable()) {
-            explorationTicks = EXPLORATION_TURN_TICKS;
-            double angle = Math.random() * 180.0 - 90.0;
+            explorationTicks = EXPLORATION_TURN_TICKS + HumanMovement.getJumpVariation() * 10;
+
+            double curiosity = HumanMovement.getExplorationCuriosity(player.position().distanceTo(
+                    lastSafePos != null ? lastSafePos : player.position()));
+
+            double angle = HumanMovement.getExplorationDeviation();
+
+            if (curiosity > 0.7 && lastSafePos != null) {
+                Vec3 toHome = lastSafePos.subtract(player.position());
+                if (toHome.horizontalDistanceSqr() > 100) {
+                    double homeAngle = Math.toDegrees(Math.atan2(toHome.z, toHome.x)) - 90.0;
+                    double currentAngle = Math.toDegrees(Math.atan2(explorationDir.z, explorationDir.x)) - 90.0;
+                    double angleDiff = Mth.wrapDegrees(homeAngle - currentAngle);
+                    angle = angle * 0.6 + angleDiff * 0.4;
+                }
+            }
+
             explorationDir = TerrainScanner.rotateY(explorationDir, angle).normalize();
         }
         return explorationDir;
@@ -523,7 +762,13 @@ public class ClientAutoPlayManager {
     }
 
     private void applyMovement(Minecraft client, LocalPlayer player, Vec3 moveDir, boolean swimming) {
-        boolean fwd = false, back = false, sprint = false, jump = false;
+        boolean fwd = false, back = false, left = false, right = false, sprint = false, jump = false;
+
+        updateStrafeState();
+        boolean isCombat = currentTarget != null || creeperThreat != null;
+        strafeOffset = HumanMovement.getStrafeOffset(gameTickCount, isCombat);
+        int strafeAction = HumanMovement.getStrafeAction(strafeOffset, strafeActive);
+
         if (creeperThreat != null) {
             if (shootStance) {
                 fwd = false;
@@ -543,20 +788,47 @@ public class ClientAutoPlayManager {
             sprint = farAway && player.onGround() && !swimming && !needJumpAhead;
         }
 
+        if (strafeAction > 0) {
+            right = true;
+        } else if (strafeAction < 0) {
+            left = true;
+        }
+
         if (jumpPulseTicks > 0) {
             jumpPulseTicks--;
             jump = true;
         } else if (needJumpAhead && player.onGround() && (fwd || back)) {
             jumpPulseTicks = 5;
             jump = true;
+        } else if (HumanMovement.shouldExtraJump() && player.onGround() && currentTarget != null) {
+            jumpPulseTicks = 3 + HumanMovement.getJumpVariation();
+            jump = true;
         }
 
         client.options.keyUp.setDown(fwd);
         client.options.keyDown.setDown(back);
-        client.options.keyLeft.setDown(false);
-        client.options.keyRight.setDown(false);
+        client.options.keyLeft.setDown(left);
+        client.options.keyRight.setDown(right);
         client.options.keySprint.setDown(sprint);
         client.options.keyJump.setDown(jump || swimming);
+    }
+
+    private void updateStrafeState() {
+        if (strafeGapTicksLeft > 0) {
+            strafeGapTicksLeft--;
+            if (strafeGapTicksLeft <= 0) {
+                strafeActive = false;
+            }
+        } else if (strafeActive) {
+            strafeBurstTicksLeft--;
+            if (strafeBurstTicksLeft <= 0) {
+                strafeActive = false;
+                strafeGapTicksLeft = HumanMovement.getStrafeGapDuration();
+            }
+        } else if (HumanMovement.shouldStartStrafeBurst()) {
+            strafeActive = true;
+            strafeBurstTicksLeft = HumanMovement.getStrafeBurstDuration();
+        }
     }
 
     private void trackStuck(LocalPlayer player) {
@@ -596,6 +868,7 @@ public class ClientAutoPlayManager {
             lastProgressPos = null;
             if (stuckEvents >= STUCK_EVENTS_BEFORE_BLACKLIST && creeperThreat == null) {
                 blacklistCurrentTarget();
+                if (agent != null) agent.noteResult("preso; alvo ignorado");
                 resetNavigationMemory();
             }
         }
@@ -608,7 +881,13 @@ public class ClientAutoPlayManager {
         float maxYaw = MAX_YAW_SPEED_HEADING;
         float maxPitch = MAX_PITCH_SPEED_HEADING;
 
-        if (pokeTarget != null) {
+        if (isLookingAround) {
+            rawYaw = lookAroundYawTarget;
+            rawPitch = camera.getPitch() + (float)(Math.sin(gameTickCount * 0.3) * 5.0);
+            responsiveness = 0.25f;
+            maxYaw = 8.0f;
+            maxPitch = 6.0f;
+        } else if (pokeTarget != null) {
             rawYaw = headingYawOf(pokeTarget.position().subtract(player.position()));
             rawPitch = pitchTo(player, bodyCenter(pokeTarget));
             responsiveness = FAST_SMOOTHING;
@@ -664,6 +943,10 @@ public class ClientAutoPlayManager {
         }
 
         camera.steer(smoothYawGoal, smoothPitchGoal, responsiveness, maxYaw, maxPitch);
+
+        float tremorIntensity = (creeperThreat != null || currentTarget != null) ? 0.3f : 0.6f;
+        camera.applyMicroTremor(tremorIntensity);
+
         player.setYRot(camera.getYaw());
         player.setXRot(camera.getPitch());
     }
@@ -699,11 +982,18 @@ public class ClientAutoPlayManager {
         }
         if (weaponSwapGrace > 0) return;
         if (distSqr <= ATTACK_RANGE * ATTACK_RANGE && cooldown <= 0) {
-            if (client.gameMode != null) {
-                client.gameMode.attack(player, target);
+            boolean shouldAttack = true;
+            if (HumanMovement.shouldVaryAttackTiming()) {
+                shouldAttack = cooldown <= -HumanMovement.getAttackTimingVariation();
             }
-            player.swing(InteractionHand.MAIN_HAND, true);
-            cooldown = ATTACK_COOLDOWN;
+
+            if (shouldAttack) {
+                if (client.gameMode != null) {
+                    client.gameMode.attack(player, target);
+                }
+                player.swing(InteractionHand.MAIN_HAND, true);
+                cooldown = ATTACK_COOLDOWN;
+            }
         }
     }
 
@@ -1005,6 +1295,28 @@ public class ClientAutoPlayManager {
         eating = false;
         previousCombatSlot = -1;
         camera.invalidate();
+
+        isHesitating = false;
+        hesitationTicks = 0;
+        isLookingAround = false;
+        lookAroundTicks = 0;
+        strafeActive = false;
+        strafeBurstTicksLeft = 0;
+        strafeGapTicksLeft = 0;
+        strafeOffset = 0;
+        collectTarget = null;
+        aiIntent = null;
+        aiHoldTicks = 0;
+        ticksSinceAiDecision = 0;
+        if (currentClient != null) currentClient.options.keyAttack.setDown(false);
+    }
+
+    private boolean aiWantsPeaceful() {
+        if (aiIntent == null || agent == null || !agent.isEnabled()) return false;
+        return switch (aiIntent.type()) {
+            case EXPLORE, COLLECT, GO_TO, WAIT, LOOK_AROUND, CHAT, EAT -> true;
+            case COMBAT, FLEE, IDLE -> false;
+        };
     }
 
     public void reset() {
