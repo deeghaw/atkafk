@@ -16,6 +16,7 @@ public class AutoMineMod implements ModInitializer {
 
     public static boolean autoPlayEnabled = false;
     public static AutoPlayManager autoPlayManager;
+    public static AutoCraftManager autoCraftManager;
 
     @Override
     public void onInitialize() {
@@ -27,6 +28,7 @@ public class AutoMineMod implements ModInitializer {
         // enable server-side autoplay by default for testing
         autoPlayEnabled = true;
         autoPlayManager = new AutoPlayManager();
+        autoCraftManager = new AutoCraftManager();
         LOGGER.info("AutoPlay ativado por padrão para testes.");
 
         LOGGER.info("AutoMine Mod carregado com sucesso!");
@@ -35,6 +37,9 @@ public class AutoMineMod implements ModInitializer {
     private void onServerTick(MinecraftServer server) {
         if (autoPlayEnabled && autoPlayManager != null) {
             autoPlayManager.tick(server);
+        }
+        if (autoPlayEnabled && autoCraftManager != null) {
+            autoCraftManager.tick(server);
         }
     }
 

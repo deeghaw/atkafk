@@ -1,15 +1,17 @@
 # AutoMine Mod
 
-Mod de autoplay estilo RPG idle para Minecraft 26.2 com Fabric API. O personagem explora, se alimenta e combate monstros sozinho. Com a API do Google AI (Gemini), ele passa a escolher sozinho o que fazer a cada poucos segundos — combate, coleta, exploração, fuga ou espera — no estilo do projeto [Minecraft_AI](https://github.com/Mai-xiyu/Minecraft_AI), mas rodando dentro do cliente Fabric.
+Mod de autoplay estilo RPG para Minecraft 26.2 com Fabric API. O personagem explora o mundo sozinho: procura e minera minérios, corta madeira, crafteia ferramentas e tochas, explora cavernas, nada em rios e mares, caça animais para comer e se defende de monstros. Com a API do Google AI (Gemini), ele passa a escolher sozinho o que fazer a cada poucos segundos — combate, coleta, exploração, fuga ou espera — no estilo do projeto [Minecraft_AI](https://github.com/Mai-xiyu/Minecraft_AI), mas rodando dentro do cliente Fabric.
 
 ## Funcionalidades
 
-- **Combate Automático**: O personagem detecta monstros hostis em um raio de 32 blocos
-- **Movimento Inteligente**: Move-se automaticamente em direção aos monstros
-- **Ataque Automático**: Ataca monstros quando estiver em alcance
-- **Sobrevivência**: Usa comida disponível na hotbar quando a fome baixa
-- **Sobrevivência**: Prioriza segurança, alimentação e combate antes da exploração
-- **Exploração**: Escolhe direções seguras e continua andando quando a área está tranquila
+- **Explorador de Mundo**: procura e minera minérios, corta madeira, caça animais passivos e coleta a carne
+- **Mineração Autônoma**: seleção automática da melhor ferramenta para cada bloco (picareta, machado, pá, enxada)
+- **Craft Automático**: tat não spawna mais monstros para o jogador — tudo que cai vem de mobs naturais ou do ambiente
+- **Cavernas**: desce escadas, coloca tochas, usa farelos de pão para voltar à superfície quando se perde
+- **Natação**: cruza rios e lagos, mergulha atrás de minérios aquáticos e sobe para respirar
+- **Combate Automático**: se defende de monstros hostis e mantém distância de creepers
+- **Sobrevivência**: usa comida disponível na hotbar; se não houver, caça animais (vaca, porco, ovelha, galinha, coelho, mooshroom)
+- **Movimento Inteligente**: navega com pulos, quebra-gelo de quedas, desvios e recuperação de entalos
 - **Sistema de Toggle**: Ativa/desativa o autoplay com a tecla K (padrão)
 - **Suporte Multiplayer**: Funciona em servidores e singleplayer
 - **Agente Gemini**: decide intenções de alto nível (explorar, lutar, comer, fugir, ir até um ponto, coletar bloco, conversar)
@@ -85,32 +87,36 @@ O arquivo JAR será gerado em `build/libs/`.
 }
 ```
 
-A variável de ambiente tem prioridade sobre o arquivo. Sem chave, o autoplay scriptado antigo continua funcionando.
+A variável de ambiente tem prioridade sobre o arquivo. Sem chave, o autoplay scriptado continua funcionando — agora como explorador autônomo (minera, crafteia, nada e se defende); a caça agressiva em raio amplo fica restrita ao intento `combat` da IA.
 
 A barra de ação no jogo mostra o status da IA. Depois de 5 erros seguidos da API, a IA pausa e o comportamento local assume.
 
 ### Configurações Avançadas
-Você pode modificar os seguintes valores no arquivo `AutoPlayManager.java`:
+Você pode modificar os seguintes valores nos arquivos do mod:
 
-- `Targeting.TARGET_RADIUS_HORIZONTAL`: Raio horizontal de busca por monstros (padrão: 48.0 blocos)
-- `Targeting.TARGET_RANGE_VERTICAL`: Faixa vertical de busca, acima/abaixo do jogador (padrão: 6.0 blocos) — evita engajar alvos no subsolo
-- `ATTACK_RANGE`: Alcance de ataque (padrão: 4.0 blocos)
+- `Targeting.TARGET_RADIUS_HORIZONTAL`: Raio horizontal de busca por ameaças (padrão: 48.0 blocos)
+- `Targeting.TARGET_RANGE_VERTICAL`: Faixa vertical de busca, acima/abaixo do jogador (padrão: 6.0 blocos)
+- `ExplorationController`: constantes de comportamento — distâncias de caça/mineração, ticks de ar submerso, cooldowns de tochas e monitor de descida (`HUNT_HUNGER`, `MAX_AIR_TICKS`, `TORCH_COOLDOWN`, `STAIR_STOP_DEPTH`, etc.)
+- `AutoCraftManager`: metas de itens automáticos — `PLANKS_TARGET`, `STICK_TARGET`, `TORCH_TARGET`, intervalo de verificação (`INTERVAL`)
+- `ATTACK_RANGE` em `ClientAutoPlayManager`: alcance de ataque (padrão: ~3.2 blocos)
 - `ATTACK_COOLDOWN`: Cooldown entre ataques em ticks (padrão: 10 ticks = 0.5 segundos)
 
 ## Uso
 
 1. Entre no mundo do Minecraft
 2. Pressione a tecla **J** para ativar o AutoPlay
-3. O personagem começará a explorar, comer e atacar monstros automaticamente
+3. O personagem começará a explorar, minerar, caçar, nadar e se defender automaticamente
 4. Pressione **K** novamente para desativar
 
 ## Comportamento
 
-- O mod detecta automaticamente monstros hostis (zumbis, esqueletos, etc.)
-- Move-se em direção ao monstro mais próximo
-- Ataca quando estiver em alcance
-- Mantém distância de creepers e evita quedas em buracos
-- Para automaticamente se não houver monstros nas proximidades
+- O mod nunca mais gera monstros artificiais; o que cai vem de mobs naturais do mundo
+- Busca minérios (carvão, ferro, cobre, ouro, redstone, lápis-lazúli, diamante, esmeralda) e madeira perto do jogador
+- Minerar o bloco escolhido com a ferramenta correta selecionada automaticamente
+- Sem combate: se não achar recursos, cava escadas para descer, coloca tochas e explora cavernas
+- Em água: cruza rios/lagos, mergulha atrás de minérios e volta à superfície para respirar
+- Fome baixa: se tem comida, come; senão, caça animais passivos e coleta a carne caída
+- Mantém distância de creepers, evita lava e quedas grandes, e recua quando encurralado
 
 ## Desenvolvimento
 
@@ -122,7 +128,16 @@ automine/
 │   │   ├── java/
 │   │   │   └── com/automine/AutoMineMod/
 │   │   │       ├── AutoMineMod.java (classe principal)
-│   │   │       └── AutoPlayManager.java (lógica de combate)
+│   │   │       ├── AutoPlayManager.java (tracking de alvos e loot natural)
+│   │   │       ├── AutoCraftManager.java (craft automático de itens/ferramentas)
+│   │   │       └── navigation/
+│   │   │           ├── ResourceScanner.java (minérios, madeira, cavernas, água)
+│   │   │           ├── ToolSelector.java (escolha de ferramenta por tier/recompensa)
+│   │   │           ├── TerrainScanner.java (navegação e segurança do terreno)
+│   │   │           ├── Targeting.java (alvos e ameaças)
+│   │   │           ├── HumanMovement.java (comportamento humano)
+│   │   │           ├── CameraSteering.java (câmera)
+│   │   │           └── StepResult.java (resultado de passos)
 │   │   └── resources/
 │   │       ├── fabric.mod.json (metadados do mod)
 │   │       ├── automine.mixins.json (configuração de mixins)
@@ -134,7 +149,10 @@ automine/
 │   └── client/
 │       └── java/
 │           └── com/automine/AutoMineMod/client/
-│               └── AutoMineModClient.java (keybinds)
+│               ├── AutoMineModClient.java (keybinds)
+│               ├── ClientAutoPlayManager.java (movimento, combate, mineração, nado)
+│               ├── ExplorationController.java (prioridades do explorador autônomo)
+│               └── ai/ (agente Gemini: intentos, estado do mundo e prompts)
 ├── build.gradle (configuração do Gradle)
 ├── gradle.properties (propriedades do projeto)
 └── settings.gradle (configuração do Gradle)

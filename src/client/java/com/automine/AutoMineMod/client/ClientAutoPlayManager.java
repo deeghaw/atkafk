@@ -5,9 +5,11 @@ import com.automine.AutoMineMod.client.ai.AiIntent;
 import com.automine.AutoMineMod.client.ai.AutonomousAgent;
 import com.automine.AutoMineMod.navigation.CameraSteering;
 import com.automine.AutoMineMod.navigation.HumanMovement;
+import com.automine.AutoMineMod.navigation.ResourceScanner;
 import com.automine.AutoMineMod.navigation.StepResult;
 import com.automine.AutoMineMod.navigation.Targeting;
 import com.automine.AutoMineMod.navigation.TerrainScanner;
+import com.automine.AutoMineMod.navigation.ToolSelector;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -61,10 +63,10 @@ public class ClientAutoPlayManager {
     private static final int EXPLORATION_TURN_TICKS = 160;
     private static final int TARGET_STUCK_TICKS = 36;
     private static final double DEFENSE_RADIUS = 8.0;
-    private static final double FOOD_SAFE_RADIUS = 10.0;
     private static final double CREEPER_FLEE_DISTANCE = 8.0;
     private static final double FALL_PREVENTION_DISTANCE = 1.4;
     private static final double POKE_RANGE = 3.0;
+    private static final double EXPLORE_REACH = 4.8;
     private static final float POKE_CONE_DEG = 65.0f;
     private static final int POKE_AIM_MAX_TICKS = 5;
     private static final int WEAPON_SWAP_GRACE_TICKS = 2;
@@ -129,6 +131,7 @@ public class ClientAutoPlayManager {
     private int ticksSinceAiDecision;
     private boolean aiChatSent;
     private BlockPos collectTarget;
+    private final ExplorationController exploration = new ExplorationController();
 
     public ClientAutoPlayManager() {
         this(null);
@@ -147,6 +150,7 @@ public class ClientAutoPlayManager {
                 releaseAllKeys(client);
                 resetNavigationMemory();
                 currentTarget = null;
+                exploration.clearCommand();
                 controlsActive = false;
             }
             return;
@@ -156,6 +160,7 @@ public class ClientAutoPlayManager {
         if (!player.isAlive()) {
             releaseAllKeys(client);
             resetNavigationMemory();
+            exploration.clearCommand();
             return;
         }
 
@@ -225,7 +230,18 @@ public class ClientAutoPlayManager {
                 currentTarget = null;
             }
             if (currentTarget == null) {
-                currentTarget = findBestTarget(player);
+                LivingEntity food = exploration.foodTarget;
+                if (food != null && food.isAlive()
+                        && player.distanceToSqr(food) <= Targeting.TARGET_RADIUS_HORIZONTAL * Targeting.TARGET_RADIUS_HORIZONTAL) {
+                    currentTarget = food;
+                } else if (food != null && !food.isAlive()) {
+                    currentTarget = null;
+                } else if (aiRequestsCombat()) {
+                    currentTarget = findBestTarget(player);
+                } else {
+                    LivingEntity threat = findNearestThreat(player);
+                    if (threat != null) currentTarget = threat;
+                }
             }
             LivingEntity nearbyThreat = findNearestThreat(player);
             if (nearbyThreat != null && (currentTarget == null
@@ -234,6 +250,7 @@ public class ClientAutoPlayManager {
                 currentTarget = nearbyThreat;
             }
             if (aiWantsPeaceful() && currentTarget != null
+                    && currentTarget != exploration.foodTarget
                     && player.distanceToSqr(currentTarget) > DEFENSE_RADIUS * DEFENSE_RADIUS) {
                 currentTarget = null;
             }
@@ -290,13 +307,23 @@ public class ClientAutoPlayManager {
 
         boolean swimming = player.isInWater();
 
+        if (creeperThreat == null && !player.isInLava() && !isFallingDangerously(player)) {
+            exploration.plan(player);
+        } else {
+            exploration.clearCommand();
+        }
+
         Vec3 desiredDir = computeDesiredDir(player);
-        if (creeperThreat == null && currentTarget == null && !hasNearbyThreat(player)) {
-            desiredDir = explorationDirection(player);
+        if (creeperThreat == null && currentTarget == null) {
+            desiredDir = noTargetDesiredDir(player);
         }
         desiredDir = applyAiDesiredDir(player, desiredDir);
         Vec3 moveDir = pickMoveDir(player, desiredDir);
-        if (moveDir != null && isNearUnsafeDrop(player, moveDir)) {
+        boolean approachingWater = exploration.swimTo != null && !player.isInWater();
+        if (approachingWater && desiredDir != null) {
+            moveDir = desiredDir;
+        }
+        if (moveDir != null && !approachingWater && !exploration.allowDrop && isNearUnsafeDrop(player, moveDir)) {
             releaseMovementKeys(client);
             moveDir = null;
         }
@@ -313,6 +340,7 @@ public class ClientAutoPlayManager {
 
         updateCameraAndApply(player, moveDir);
         applyCollectMining(client, player, moveDir);
+        applyExploration(client, player, moveDir);
 
         if (currentTarget != null) {
             combatTick(client, player, currentTarget);
@@ -638,10 +666,88 @@ public class ClientAutoPlayManager {
         return false;
     }
 
-    private boolean hasNearbyThreat(LocalPlayer player) {
-        AABB box = player.getBoundingBox().inflate(FOOD_SAFE_RADIUS);
-        return !player.level().getEntitiesOfClass(LivingEntity.class, box,
-                e -> e != player && e.isAlive() && e instanceof Enemy).isEmpty();
+    private Vec3 noTargetDesiredDir(LocalPlayer player) {
+        Vec3 ed = exploration.desiredDir(player);
+        if (ed != null) return ed;
+        return explorationDirection(player);
+    }
+
+    private void applyExploration(Minecraft client, LocalPlayer player, Vec3 moveDir) {
+        boolean aiCollecting = agent != null && agent.isEnabled()
+                && aiIntent != null && aiIntent.type() == AiIntent.Type.COLLECT;
+        boolean allowActions = creeperThreat == null && currentTarget == null
+                && !usingBow && !eating && !aiCollecting
+                && !player.isInLava() && !isFallingDangerously(player);
+
+        BlockPos torch = exploration.torchPlace;
+        if (torch != null && allowActions) {
+            int slot = findItemSlot(player, Items.TORCH);
+            if (slot >= 0) {
+                player.getInventory().setSelectedSlot(slot);
+                Vec3 look = Vec3.atCenterOf(torch);
+                camera.steer(headingYawOf(look.subtract(player.position())),
+                        pitchTo(player, look), FAST_SMOOTHING, MAX_YAW_SPEED_FAST, MAX_PITCH_SPEED_HEADING);
+                player.setYRot(camera.getYaw());
+                player.setXRot(camera.getPitch());
+                boolean inReach = player.getEyePosition().distanceTo(look) < EXPLORE_REACH;
+                if (inReach && !player.isUsingItem()) {
+                    client.options.keyUse.setDown(true);
+                    if (client.gameMode != null) {
+                        client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+                    } else {
+                        player.startUsingItem(InteractionHand.MAIN_HAND);
+                    }
+                    exploration.torchPlace = null;
+                } else if (inReach) {
+                    client.options.keyUse.setDown(true);
+                }
+                return;
+            }
+            exploration.torchPlace = null;
+        } else {
+            client.options.keyUse.setDown(false);
+        }
+
+        BlockPos mt = exploration.mineTarget;
+        if (mt == null) {
+            if (!aiCollecting && currentTarget == null) client.options.keyAttack.setDown(false);
+            return;
+        }
+        if (!allowActions) {
+            if (!aiCollecting && currentTarget == null) client.options.keyAttack.setDown(false);
+            return;
+        }
+        if (player.level().getBlockState(mt).isAir()
+                || !ResourceScanner.isDiggable(player.level(), mt)) {
+            exploration.markBlocked(mt);
+            client.options.keyAttack.setDown(false);
+            return;
+        }
+        int tool = ToolSelector.selectFor(player.getInventory(), player.level().getBlockState(mt));
+        if (tool < 0) {
+            exploration.markBlocked(mt);
+            client.options.keyAttack.setDown(false);
+            return;
+        }
+        Vec3 look = Vec3.atCenterOf(mt);
+        camera.steer(headingYawOf(look.subtract(player.position())),
+                pitchTo(player, look), FAST_SMOOTHING, MAX_YAW_SPEED_FAST, MAX_PITCH_SPEED_HEADING);
+        player.setYRot(camera.getYaw());
+        player.setXRot(camera.getPitch());
+        boolean inReach = player.getEyePosition().distanceTo(look) < EXPLORE_REACH;
+        client.options.keyAttack.setDown(inReach);
+        if (moveDir == null && !inReach) {
+            exploration.markBlocked(mt);
+        }
+    }
+
+    private int findItemSlot(LocalPlayer player, net.minecraft.world.item.Item item) {
+        int size = Math.min(9, player.getInventory().getContainerSize());
+        for (int slot = 0; slot < size; slot++) {
+            ItemStack stack = player.getInventory().getItem(slot);
+            if (!stack.isEmpty() && stack.is(item)) return slot;
+        }
+        return -1;
     }
 
     private Vec3 explorationDirection(LocalPlayer player) {
@@ -867,7 +973,11 @@ public class ClientAutoPlayManager {
             stuckTicks = 0;
             lastProgressPos = null;
             if (stuckEvents >= STUCK_EVENTS_BEFORE_BLACKLIST && creeperThreat == null) {
-                blacklistCurrentTarget();
+                if (currentTarget != null) {
+                    blacklistCurrentTarget();
+                } else {
+                    exploration.onStuck();
+                }
                 if (agent != null) agent.noteResult("preso; alvo ignorado");
                 resetNavigationMemory();
             }
@@ -912,6 +1022,15 @@ public class ClientAutoPlayManager {
                     maxYaw = MAX_YAW_SPEED_AIM;
                     maxPitch = MAX_PITCH_SPEED_AIM;
                 }
+            }
+        } else if (exploration.swimEngaged && exploration.swimTo != null) {
+            Vec3 t = exploration.swimLookTarget(player);
+            if (t != null) {
+                Vec3 to = t.subtract(player.position());
+                if (to.horizontalDistanceSqr() > 1.0E-4) {
+                    rawYaw = headingYawOf(new Vec3(to.x, 0, to.z));
+                }
+                rawPitch = pitchTo(player, t);
             }
         } else if (moveDir != null) {
             rawYaw = headingYawOf(moveDir);
@@ -977,7 +1096,9 @@ public class ClientAutoPlayManager {
         boolean hasMeleeWeapon = !holdingBow && handStack.get(DataComponents.WEAPON) != null;
         if (!hasMeleeWeapon) {
             if (weaponSwapGrace > 0) return;
-            if (selectWeaponItem(player)) weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+            if (target instanceof Enemy) {
+                if (selectWeaponItem(player)) weaponSwapGrace = WEAPON_SWAP_GRACE_TICKS;
+            }
             return;
         }
         if (weaponSwapGrace > 0) return;
@@ -1311,6 +1432,11 @@ public class ClientAutoPlayManager {
         if (currentClient != null) currentClient.options.keyAttack.setDown(false);
     }
 
+    private boolean aiRequestsCombat() {
+        return agent != null && agent.isEnabled() && aiIntent != null
+                && aiIntent.type() == AiIntent.Type.COMBAT;
+    }
+
     private boolean aiWantsPeaceful() {
         if (aiIntent == null || agent == null || !agent.isEnabled()) return false;
         return switch (aiIntent.type()) {
@@ -1331,6 +1457,7 @@ public class ClientAutoPlayManager {
         controlsActive = false;
         cooldown = 0;
         targetBlacklist.clear();
+        exploration.reset();
         resetNavigationMemory();
         if (currentClient != null) {
             releaseAllKeys(currentClient);

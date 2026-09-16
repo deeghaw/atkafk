@@ -3,13 +3,9 @@ package com.automine.AutoMineMod;
 import com.automine.AutoMineMod.navigation.Targeting;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.skeleton.Skeleton;
 import net.minecraft.world.entity.monster.spider.Spider;
 import net.minecraft.world.entity.monster.zombie.Zombie;
@@ -24,12 +20,9 @@ import java.util.Map;
 import java.util.UUID;
 
 public class AutoPlayManager {
-    private static final int SPAWN_INTERVAL = 100;
-    private static final double SPAWN_DISTANCE = 12.0;
     private static final double RARE_LOOT_CHANCE = 0.08;
 
     private final Map<UUID, LivingEntity> currentTargets = new HashMap<>();
-    private final Map<UUID, Integer> spawnCooldowns = new HashMap<>();
 
     public void tick(MinecraftServer server) {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
@@ -41,8 +34,6 @@ public class AutoPlayManager {
 
     private void processPlayer(ServerPlayer player) {
         UUID pid = player.getUUID();
-        int cooldown = spawnCooldowns.getOrDefault(pid, 0);
-        if (cooldown > 0) spawnCooldowns.put(pid, cooldown - 1);
 
         LivingEntity currentTarget = currentTargets.get(pid);
         if (currentTarget != null && !currentTarget.isAlive()) {
@@ -59,12 +50,6 @@ public class AutoPlayManager {
             if (currentTarget != null) {
                 currentTargets.put(pid, currentTarget);
             }
-        }
-
-        if (currentTarget == null && !hasActiveEnemy(player)
-                && spawnCooldowns.getOrDefault(pid, 0) <= 0) {
-            spawnNearbyMonster(player);
-            spawnCooldowns.put(pid, SPAWN_INTERVAL);
         }
 
         try {
@@ -102,43 +87,6 @@ public class AutoPlayManager {
         return best;
     }
 
-    private boolean hasActiveEnemy(ServerPlayer player) {
-        AABB box = player.getBoundingBox().inflate(
-                Targeting.TARGET_RADIUS_HORIZONTAL,
-                Targeting.TARGET_RANGE_VERTICAL,
-                Targeting.TARGET_RADIUS_HORIZONTAL);
-        return !player.level().getEntitiesOfClass(LivingEntity.class, box,
-                e -> e != player && e.isAlive() && e instanceof Enemy && !Targeting.isAquatic(e)).isEmpty();
-    }
-
-    private void spawnNearbyMonster(ServerPlayer player) {
-        if (!(player.level() instanceof ServerLevel level)
-            || level.getDifficulty() == net.minecraft.world.Difficulty.PEACEFUL) return;
-
-        double angle = player.getRandom().nextDouble() * Math.PI * 2.0;
-        int x = (int) Math.floor(player.getX() + Math.cos(angle) * SPAWN_DISTANCE);
-        int z = (int) Math.floor(player.getZ() + Math.sin(angle) * SPAWN_DISTANCE);
-        for (int y = player.blockPosition().getY() + 2; y >= player.blockPosition().getY() - 3; y--) {
-            BlockPos feet = new BlockPos(x, y, z);
-            if (!isSafeSpawn(level, feet)) continue;
-
-                    if (!(BuiltInRegistries.ENTITY_TYPE
-                    .getValue(net.minecraft.resources.Identifier.fromNamespaceAndPath("minecraft", "zombie"))
-                        .create(level, EntitySpawnReason.COMMAND) instanceof LivingEntity monster)) return;
-            monster.setPos(x + 0.5, y, z + 0.5);
-            if (level.noCollision(monster)) {
-                level.addFreshEntity(monster);
-            }
-            return;
-        }
-    }
-
-    private boolean isSafeSpawn(ServerLevel level, BlockPos feet) {
-        return level.getBlockState(feet.below()).isSolid()
-                && level.getBlockState(feet).isAir()
-                && level.getBlockState(feet.above()).isAir();
-    }
-
     private void grantLoot(ServerPlayer player, LivingEntity target) {
         if (!(target instanceof Enemy)) return;
 
@@ -168,6 +116,5 @@ public class AutoPlayManager {
 
     public void reset() {
         currentTargets.clear();
-        spawnCooldowns.clear();
     }
 }

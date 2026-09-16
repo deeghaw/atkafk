@@ -1,10 +1,12 @@
 package com.automine.AutoMineMod.client.ai;
 
+import com.automine.AutoMineMod.navigation.ResourceScanner;
 import com.automine.AutoMineMod.navigation.Targeting;
+import com.automine.AutoMineMod.navigation.ToolSelector;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.tags.BlockTags;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.item.ItemStack;
@@ -34,6 +36,10 @@ public final class WorldStateCollector {
         sb.append("- Periodo: ").append(timeOfDay(player.level())).append('\n');
         if (player.isInWater()) sb.append("- Status: na agua\n");
         if (player.isInLava()) sb.append("- Status: na lava\n");
+        if (!player.isInWater() && !player.isInLava()
+                && ResourceScanner.isUnderground(player.level(), player.blockPosition())) {
+            sb.append("- Status: subterraneo\n");
+        }
 
         sb.append("\n## Inventario (hotbar)\n");
         boolean any = false;
@@ -44,6 +50,8 @@ public final class WorldStateCollector {
             sb.append("- ").append(itemId(stack)).append(" x").append(stack.getCount()).append('\n');
         }
         if (!any) sb.append("(vazia)\n");
+
+        appendInventorySummary(player, sb);
 
         sb.append("\n## Entidades proximas\n");
         AABB box = player.getBoundingBox().inflate(24.0, 6.0, 24.0);
@@ -114,15 +122,73 @@ public final class WorldStateCollector {
 
     private static boolean isInteresting(BlockState state) {
         String path = BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
-        return state.is(BlockTags.LOGS)
-                || state.is(BlockTags.IRON_ORES)
-                || state.is(BlockTags.COPPER_ORES)
-                || state.is(BlockTags.GOLD_ORES)
-                || state.is(BlockTags.BEDS)
+        return path.endsWith("_ore")
+                || path.equals("ancient_debris")
+                || path.endsWith("_log")
+                || path.endsWith("_wood")
                 || path.contains("chest")
                 || path.contains("crafting")
                 || path.contains("furnace")
-                || path.contains("ore");
+                || path.contains("bed")
+                || path.contains("torch")
+                || path.equals("bookshelf");
+    }
+
+    private static void appendInventorySummary(LocalPlayer player, StringBuilder sb) {
+        int logs = 0;
+        int planks = 0;
+        int sticks = 0;
+        int torches = 0;
+        int coal = 0;
+        int cobble = 0;
+        int ingots = 0;
+        int diamonds = 0;
+        int food = 0;
+        for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
+            ItemStack stack = player.getInventory().getItem(slot);
+            if (stack.isEmpty()) continue;
+            String path = itemId(stack);
+            int count = stack.getCount();
+            if (path.endsWith("_log") || path.endsWith("_wood")) logs += count;
+            else if (path.endsWith("_planks")) planks += count;
+            else if (path.equals("stick")) sticks += count;
+            else if (path.equals("torch")) torches += count;
+            else if (path.equals("coal") || path.equals("charcoal")) coal += count;
+            else if (path.equals("cobblestone")) cobble += count;
+            else if (path.endsWith("_ingot")) ingots += count;
+            else if (path.equals("diamond")) diamonds += count;
+            if (stack.get(DataComponents.FOOD) != null) food += count;
+        }
+        sb.append("\n## Inventario (resumo)\n");
+        sb.append("- madeira: ").append(logs).append("\n");
+        sb.append("- tabuas: ").append(planks).append("\n");
+        sb.append("- paus: ").append(sticks).append("\n");
+        sb.append("- tochas: ").append(torches).append("\n");
+        sb.append("- carvao: ").append(coal).append("\n");
+        sb.append("- pedregulho: ").append(cobble).append("\n");
+        sb.append("- lingotes: ").append(ingots).append("\n");
+        sb.append("- diamantes: ").append(diamonds).append("\n");
+        sb.append("- comida: ").append(food).append("\n");
+        int pickaxe = ToolSelector.hasKind(player.getInventory(), "pickaxe")
+                ? bestTier(player, "pickaxe") : -1;
+        int axe = ToolSelector.hasKind(player.getInventory(), "axe")
+                ? bestTier(player, "axe") : -1;
+        int shovel = ToolSelector.hasKind(player.getInventory(), "shovel")
+                ? bestTier(player, "shovel") : -1;
+        sb.append(String.format(java.util.Locale.ROOT,
+                "- ferramentas: picareta=%d machado=%d pa=%d (0=madeira,1=pedra,2=cobre,3=ferro,4=ouro,5=diamante,6=netherita)\n",
+                pickaxe, axe, shovel));
+    }
+
+    private static int bestTier(LocalPlayer player, String kind) {
+        int best = -1;
+        for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
+            ItemStack stack = player.getInventory().getItem(slot);
+            if (stack.isEmpty() || !kind.equals(ToolSelector.kindOf(stack))) continue;
+            int tier = ToolSelector.tierOf(stack);
+            if (tier > best) best = tier;
+        }
+        return best;
     }
 
     private static String timeOfDay(Level level) {
