@@ -134,7 +134,7 @@ public class AutoPlayManager {
     }
 
     private boolean isSafeSpawn(ServerLevel level, BlockPos feet) {
-        return level.getBlockState(feet.below()).isSolid()
+        return !level.getBlockState(feet.below()).getCollisionShape(level, feet.below()).isEmpty()
                 && level.getBlockState(feet).isAir()
                 && level.getBlockState(feet.above()).isAir();
     }

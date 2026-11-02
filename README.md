@@ -1,6 +1,6 @@
 # AutoMine Mod
 
-Mod de autoplay estilo RPG idle para Minecraft 26.2 com Fabric API. O personagem explora, se alimenta e combate monstros sozinho.
+Mod de autoplay estilo RPG idle para Minecraft 26.3 com Fabric API. O personagem explora, se alimenta e combate monstros sozinho.
 
 ## Funcionalidades
 
@@ -15,9 +15,9 @@ Mod de autoplay estilo RPG idle para Minecraft 26.2 com Fabric API. O personagem
 
 ## Requisitos
 
-- Minecraft 26.2
-- Fabric Loader 0.19.3+
-- Fabric API 0.158.0+26.2+
+- Minecraft 26.3
+- Fabric Loader 0.19.5+
+- Fabric API 0.165.0+26.3+
 - Java 25+
 
 ## Compilação
@@ -50,8 +50,8 @@ O arquivo JAR será gerado em `build/libs/`.
    - Copie este arquivo para a pasta `mods` da sua instalação Fabric
 
 3. **Instale as dependências**:
-   - Instale o [Fabric Loader 0.19.3+](https://fabricmc.net/use/) para Minecraft 26.2
-   - Instale o [Fabric API 0.158.0+26.2](https://modrinth.com/mod/fabric-api)
+   - Instale o [Fabric Loader 0.19.5+](https://fabricmc.net/use/) para Minecraft 26.3
+   - Instale o [Fabric API 0.165.0+26.3](https://modrinth.com/mod/fabric-api)
 
 4. **Inicie o jogo**:
    - O mod será carregado automaticamente

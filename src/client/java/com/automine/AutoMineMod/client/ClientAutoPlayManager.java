@@ -16,6 +16,7 @@ import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
@@ -702,7 +703,7 @@ public class ClientAutoPlayManager {
             if (client.gameMode != null) {
                 client.gameMode.attack(player, target);
             }
-            player.swing(InteractionHand.MAIN_HAND, true);
+            player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
             cooldown = ATTACK_COOLDOWN;
         }
     }
@@ -721,7 +722,7 @@ public class ClientAutoPlayManager {
             if (client.gameMode != null) {
                 client.gameMode.attack(player, pokeTarget);
             }
-            player.swing(InteractionHand.MAIN_HAND, true);
+            player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
             cooldown = ATTACK_COOLDOWN;
             pokeTarget = null;
             pokeTicks = 0;
@@ -786,7 +787,7 @@ public class ClientAutoPlayManager {
             if (client.gameMode != null) {
                 client.gameMode.attack(player, creeper);
             }
-            player.swing(InteractionHand.MAIN_HAND, true);
+            player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
             cooldown = ATTACK_COOLDOWN;
             forceEscapeTicks = FORCE_ESCAPE_TICKS;
         }
